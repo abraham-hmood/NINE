@@ -247,7 +247,7 @@ Everything else still ⬛ per family:
 
 ## 3. Alignment to the coverage docs
 
-- README carries the *visual* coverage grids (Windows ABI / Linux API / ISA).
+- README carries the *visual* coverage grids (Windows ABI / Linux API / ISA), now including the **complete Windows system-DLL inventory** (≈80 app-linkable DLLs incl. kernelbase/win32u/api-ms-win-* API-sets) and the **complete Linux system-library inventory** (glibc family + GCC runtime + ecosystems listed per family).
 - `LIBRARIES.md` carries the *named* per-API and per-syscall checklists.
 - This file carries the *instruction* inventory + the runtime architecture rationale.
 - `app/src/main/cpp/SUPPORTED.md` remains the original hardcoded technical table (syscalls, relocations, PE directories).

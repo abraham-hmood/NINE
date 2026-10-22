@@ -100,6 +100,90 @@ Full named inventories live in [LIBRARIES.md](LIBRARIES.md) (Windows DLLs / Linu
 | d3d9/d3d11/d3d12/d2d1/dwrite/dxgi/winmm/xinput | ⬛ G2 interception phase | | |
 | msvcrt / ucrtbase | ⬛ CRT runtime shim | | |
 
+#### Windows system DLL inventory (app-linkable libraries)
+
+Every DLL a Windows app can link against, grouped by purpose. 🟩 = NINE implements real behavior · 🟨 = stub-recognized (fake IAT addresses / safe-fail dispatch) · ⬛ = not implemented (unresolved imports). Note: on Win10+ the syscall *bodies* behind kernel32/user32/gdi32 live in **kernelbase.dll** and **win32u.dll**, and `api-ms-win-*` **API-set** redirection is resolved at load time — the loader must treat API-set names as aliases.
+
+| Library | Purpose | Status |
+|---|---|---|
+| ntdll.dll | Native API, RTL heap/critical-sections, LDR/PEB, SEH base | 🟨 (8 RTL primitives + Ldr real; most `Nt*` ⬛) |
+| kernel32.dll | Base API: process/thread/memory/file/sync/console | 🟨 (45 registered exports, ~25 with real behavior) |
+| kernelbase.dll | Win10+ merged kernel32/advapi32 bodies | ⬛ |
+| win32u.dll | Win10+ syscall layer for user32/gdi32 | ⬛ |
+| user32.dll | Windows, message loop, input, hotkeys, timers | 🟨 (2 fake-address stubs) |
+| gdi32.dll | Device contexts BitBlt/GDI raster | 🟨 (fake addresses) |
+| advapi32.dll | Registry, services, LSA, event log, crypto (legacy) | 🟨 (RegOpenKeyExA fail-correct) |
+| shell32.dll | Shell namespace, icons, SHFileOperation, tray | ⬛ |
+| shlwapi.dll | Path/URL/registry string helpers | ⬛ |
+| shcore.dll | HiDPI scaling, display enumeration | ⬛ |
+| comctl32.dll | Common controls (listview, toolbar, hotkey...) | ⬛ |
+| comdlg32.dll | Common dialogs (open/save/print/color) | ⬛ |
+| ole32.dll | COM activation, apartment management | ⬛ |
+| oleaut32.dll | OLE Automation, typelib, SAFEARRAYs | ⬛ |
+| combase.dll | Modern COM platform API | ⬛ |
+| propsys.dll | Property system / metadata | ⬛ |
+| ws2_32.dll | Winsock 2 networking | ⬛ |
+| wsock32.dll | Winsock 1.x compat shim | ⬛ |
+| mswsock.dll | Kernel-mode socket extensions (AIO, DNS queries) | ⬛ |
+| wininet.dll | High-level HTTP/FTP (IE stack) | ⬛ |
+| winhttp.dll | HTTP client services | ⬛ |
+| urlmon.dll | URL Monikers / MIME handling | ⬛ |
+| dnsapi.dll | DNS resolution | ⬛ |
+| iphlpapi.dll | IP helper (adapters, ARP, routes) | ⬛ |
+| netapi32.dll | Network management APIs | ⬛ |
+| mpr.dll | Multi-provider network routing | ⬛ |
+| wldap32.dll | LDAP client | ⬛ |
+| secur32.dll / sspicli.dll | SSPI security channels (NTLM/Kerberos) | ⬛ |
+| rpcrt4.dll | RPC runtime (COM channel too) | ⬛ |
+| crypt32.dll | Certificates, PKI, CryptProtectData (DPAPI) | ⬛ |
+| bcrypt.dll + bcryptprimitives.dll | CNG crypto primitives (AES/SHA/RNG) | ⬛ |
+| ncrypt.dll | CNG key storage / certificates | ⬛ |
+| cryptbase.dll / cryptnet.dll | Crypto base SPI + network CRL fetch | ⬛ |
+| wintrust.dll | Authenticode signature verification | ⬛ |
+| winmm.dll | Wave/midi, mciSendString, time functions | ⬛ |
+| dsound.dll | DirectSound audio | ⬛ |
+| dinput8.dll | DirectInput input devices | ⬛ |
+| xinput1_4.dll / xinput9_1_0.dll | Gamepad API | ⬛ |
+| xaudio2_*.dll / xapofx1_*.dll / x3daudio1_*.dll | XAudio2 DSP stack | ⬛ |
+| ddraw.dll | DirectDraw legacy 2D/3D | ⬛ |
+| d3d8.dll / d3d9.dll / d3d10.dll / d3d10_1.dll / d3d11.dll / d3d12.dll | DirectX 3D | ⬛ |
+| d3dcompiler_47.dll | HLSL compiler | ⬛ |
+| dxgi.dll | Swapchains, adapters, output resolution | ⬛ |
+| dxcore.dll | Modern adapter enumeration | ⬛ |
+| d2d1.dll | Direct2D vector raster | ⬛ |
+| dwrite.dll | DirectWrite font shaping/rendering | ⬛ |
+| dwmapi.dll | Desktop Window Manager composition | ⬛ |
+| uxtheme.dll | Theme visual styles | ⬛ |
+| imm32.dll | Input Method Editor bridge | ⬛ |
+| opengl32.dll / glu32.dll | OpenGL + WGL | ⬛ |
+| gdiplus.dll | GDI+ 2D vector/image/metafiles | ⬛ |
+| windowscodecs.dll | WIC image codecs (PNG/JPEG/TIFF...) | ⬛ |
+| mfplat.dll / mf.dll / mfreadwrite.dll / mfplay.dll | Media Foundation pipeline | ⬛ |
+| wmva? evr.dll / wmvcore.dll | Enhanced video renderer, WM media | ⬛ |
+| msvcrt.dll | Legacy msvcrt export set | ⬛ |
+| ucrtbase.dll | Universal CRT (api-ms-win-crt-* forward to it) | ⬛ |
+| msvcp140.dll / vcruntime140.dll / concrt140.dll | VC++ toolchain runtimes (redistributable) | ⬛ |
+| dbghelp.dll | Symbol inspection, minidumps | ⬛ |
+| imagehlp.dll | Image integrity/tooling | ⬛ |
+| version.dll | File version metadata | ⬛ |
+| psapi.dll | Process memory/module enumeration | ⬛ |
+| powrprof.dll | Power schemes / battery state | ⬛ |
+| userenv.dll | Profiles / environment expansion | ⬛ |
+| wtsapi32.dll | Terminal-services (RDP) session APIs | ⬛ |
+| wevtapi.dll | Event log publishing/consumer | ⬛ |
+| setupapi.dll / cfgmgr32.dll / devobj.dll / newdev.dll | Device enumeration + INF install | ⬛ |
+| winspool.drv | Printing spooler | ⬛ |
+| winusb.dll / hid.dll / ksuser.dll | Raw USB/HID/kernel-streaming | ⬛ |
+| virtdisk.dll | Virtual disk (VHD/VHDX) management API | ⬛ |
+| winbio.dll | Biometric auth | ⬛ |
+| sapi.dll / mmdevapi.dll / msacm32.dll | Speech, default audio endpoint, codecs | ⬛ |
+| winscard.dll / tapi32.dll / winfax.dll | Smart card, TAPI, fax | ⬛ |
+| msi.dll | Installer engine | ⬛ |
+| odbc32.dll / odbccp32.dll | ODBC driver-manager | ⬛ |
+| ntdsapi.dll / activeds.dll / adsldp*.dll | Active Directory clients | ⬛ |
+| api-ms-win-* (≈400 libs) | API-set forwarders, alias table pending | ⬛ |
+| api-ms-win-downlevel-* / unicows / msvcrt legacy set | Downlevel compat versions | ⬛ |
+
 ### Linux API (ELF guests, primary today)
 
 | Group | 🟩 | 🟨 | ⬛ |
@@ -112,6 +196,44 @@ Full named inventories live in [LIBRARIES.md](LIBRARIES.md) (Windows DLLs / Linu
 | Signals | 🟨 rt_sigaction/rt_sigprocmask bookkeeping stubs | | ⬛ real delivery, sigaltstack, rt_sigtimedwait |
 | Sockets | enum'd only | 🟨 sendto/recvfrom paths routed through SocketABI | ⬛ socket/connect/bind/listen/accept, socketpair, recvmsg/sendmsg |
 | Misc | 🟩 uname (x86_64 spoof), getrandom, prctl (partial), rseq→ENOSYS graceful | 🟨 sysinfo struct fill | ⬛ bpf, perf_event, io_uring |
+
+#### Linux system library inventory (all programs link these)
+
+What a dynamically linked ELF can `DT_NEEDED`. 🟩 = satisfiable today (in-image for static glibc guests, or resolvable/bundled through the Relinker's library table) · 🟨 = recognized by the loader abstraction but not bundled · ⬛ = not provided — a dynamic guest needing it fails at symbol resolution until the Relinker ships it. Static-binaries sidestep every row: glibc is baked in, and everything here is demand-driven backlog only when a *dynamic* guest needs it.
+
+| Library family | Contents | Status |
+|---|---|---|
+| Dynamic loader | `ld-linux-x86-64.so.2` (ldso: PT_INTERP bootstrap, path search, versioned symbols, dlopen) | 🟩 (loader runs; audit untested) |
+| glibc core | `libc.so.6` (ISO C + POSIX: stdio, malloc, string, env, locale, iconv, qsort, time, sockets wrappers...) | 🟩 (static guests bake it in; dynamic via ldso path 🟨) |
+| glibc math | `libm.so.6` (sinf/cos/exp/log/pow...) | 🟩 (in-image for statics) |
+| glibc POSIX split-outs (merged into libc.so.6 in glibc ≥2.34; callers still link the stub sonames) | `libpthread.so.0`, `libdl.so.2`, `librt.so.1`, `libutil.so.1` | 🟩 (merge-aware support in loader) |
+| glibc crypt | `libcrypt.so.2` / libxcrypt | 🟨 |
+| glibc resolver | `libresolv.so.2` (getaddrinfo plumbing, gai) | 🟨 (interface recognized) |
+| glibc async name | `libanl.so.1` (getaddrinfo_a) | ⬛ |
+| glibc NIS | `libnsl.so.3` (legacy ypbind/RPC glue) | ⬛ |
+| broken locale | `libBrokenLocale.so.1` | ⬛ |
+| NSS service modules | `libnss_files.so.2`, `libnss_dns.so.2`, `libnss_compat`, `libnss_nis`, `libnss_db`, `libnss_hesiod` (getent/passwd/hosts sources) | ⬛ |
+| LD_PRELOAD/audit internals | `libc.so, libc_nonshared.a`, `libthread_db.so` (gdb glue) | ⬛ |
+| GCC / clang runtime | `libgcc_s.so.1` (unwinder, split atomics), `libatomic.so.1`, `libstdc++.so.6` (C++ ABI + libsupc++), `libc++`(Clang alt), `libquadmath`, `libgfortran` (Fortran), `libgomp` (OpenMP), `libitanium`, `libsanitizer` | 🟨 handled for statics only; dynamic unresolved |
+| Compression codecs | `libz.so.1`, `libbz2.so.1`, `liblzma.so.5`, `libzstd.so.1`, `liblz4.so.1` | ⬛ |
+| SSL / TLS | `libssl.so.3`, `libcrypto.so.3`; also `libgnutls.so.30`, `libgcrypt.so.20`, `libgpg-error` | ⬛ |
+| HTTP / URI | `libcurl.so.4`, `libnghttp2`, `libidn2`, `libpsl`, `libunistring`, `libssh` | ⬛ |
+| Kerberos / auth / LDAP | `libgssapi_krb5.so.2`, `libkrb5.so.3`, `libk5crypto.so.3`, `libcom_err.so.2`, `libsasl2`, `libldap`, `libnss3.so`(Mozilla NSS), `libnspr4` | ⬛ |
+| RPC | `libtirpc.so.3`, `librpcsvc`, `libgssrpc` | ⬛ |
+| DBus / systemd | `libdbus-1.so.3`, `libsystemd.so.0`, `libudev.so.1`, `libsd-bus` | ⬛ |
+| Kernel-adjacent helpers | `libseccomp.so.2`, `libcap.so.2`, `libacl.so.1`, `libattr.so.1`, `libselinux.so.1`, `libpam.so.0`, `libaudit.so.1`, `libcap-ng`, `libmount`/`libblkid`/`libuuid` (util-linux), `libnuma`, `libaio`, `liburing(aio 2)` | ⬛ |
+| C_Helper (glib family) | `libglib-2.0.so`, `libgobject-2.0.so`, `libgio.so`, `libffi.so.8` | ⬛ |
+| X11 / Wayland stack | `libX11.so.6`, `libxcb.so.1` (+`-util`, `-image`, `-shm`, `xfixes` etc), `libXext`, `libXrender`, `libXrandr`, `libXi`, `libXinerama`, `libXcursor`, `libXfixes`, `libXau`, `libXdmcp`, `libxkbcommon`(+`-x11`), `libwayland-client/server` | ⬛ |
+| OpenGL / Vulkan | `libGL.so.1`, `libGLX.so.0`, `libOpenGL.so.0`, `libEGL.so.1`, `libGLESv2.so`, `libdrm.so.2`, `libgbm.so.1`, `libvulkan.so.1`, `libva`/`libvdpau` | ⬛ |
+| Audio | `libasound.so.2` (ALSA), `libpulse.so.0` (PulseAudio), `libpulse-simple`, `libjack` | ⬛ |
+| Text / regex / markup | `libpcre.so.1` / `libpcre2-8.so.0`, `libexpat.so.1`, `libxml2`, `libxslt`, `libfontconfig.so.1`, `libfreetype.so.6`, `libharfbuzz.so.0`, `libcairo.so.2`, `libpango` | ⬛ |
+| Imaging | `libpng16.so.16`, `libjpeg.so.8/62/9`, `libtiff`, `libwebp`, `libgif` | ⬛ |
+| Toolkits | `libgtk-3.so.0`, `libgdk`, `libatk`, `libQt5/6Core/Gui/Widgets...` | ⬛ |
+| media codecs | `libavcodec` / `libavformat` / `libavutil` / `libswscale` (usually bundled), `libogg`, `libvorbis`, `libopus`, `libx264`, `libx265` | ⬛ |
+| printing / CUPS | `libcups.so.2` | ⬛ |
+| NIS/RPC legacy | `libnsl.so.1` legacy symlink | ⬛ |
+| alternative libc | musl-exclusive imports (`musl libc`, rarely as app `DT_NEEDED`, static binaries etc) | ⬛ |
+| debug/diag | `libSegFault.so` (glibc crash handler catchsegv) | ⬛ |
 
 ### x86-64 instruction coverage (detail per family in ARCHITECTURE.md §2)
 

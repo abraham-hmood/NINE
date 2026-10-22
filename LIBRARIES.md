@@ -168,5 +168,7 @@ faccessat(269)     prlimit64(302)
 - Linux syscalls with real behavior: **≈60** of ~450 documented numbers
 - Windows: PE loader stack 🟩; ntdll 8 primitives 🟩; kernel32 **45 registered / ~25 with real behavior**; user32/gdi32/advapi32 🟨 stub addresses
 - ISA: running set ≈70 opcodes end-to-end; see ARCHITECTURE.md §2 for the ledger
+- **System-library inventory** (README › Coverage grids): Windows ≈80 app-linkable DLLs catalogued; NINE-side behavioral shims exist only for ntdll/kernel32/user32/gdi32/advapi32 stubs — everything else ⬛. Linux ≈55 library families catalogued; the satisfiable set is the glibc core family (loader, libc, libm, merged pthread/dl/rt/util via static-in-image + loader merge-awareness) 🟩/🟨 and libresolv 🟨, liberally everything else ⬛ demand-driven backlog for dynamic guests
+- ⬛-only rule: a DLL/library row stays ⬛ until a guest proves it needs it (REVERSE_TECHNIQUE.md); the inventories are the backlog, not a forced pre-implementation todo
 
 Refresh cadence rule: any commit that adds/changes a guest-visible surface must flip the corresponding cells in README grids, LIBRARIES.md, and ARCHITECTURE.md (see REVERSE_TECHNIQUE.md "Coverage ledger maintenance").
