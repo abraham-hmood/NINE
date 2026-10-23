@@ -139,4 +139,12 @@ object AppStore {
         ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
             .putString("upscaler_model_dir", dirPath).apply()
     }
+
+    /** One-shot flag: did we already ask for All-files access (light shells)? */
+    fun allFilesPrompted(ctx: Context): Boolean =
+        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean("all_files_prompted", false)
+
+    fun setAllFilesPrompted(ctx: Context) {
+        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putBoolean("all_files_prompted", true).apply()
+    }
 }

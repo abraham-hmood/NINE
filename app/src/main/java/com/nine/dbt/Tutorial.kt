@@ -100,6 +100,25 @@ private fun requestPermissions(activity: ComponentActivity) {
         ContextCompat.checkSelfPermission(activity, Manifest.permission.READ_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) {
         needed += Manifest.permission.READ_EXTERNAL_STORAGE
     }
+    // All-files access: light-shell APKs are saved to /sdcard/NINE/shells.
+    // MANAGE_EXTERNAL_STORAGE cannot be requested through the runtime dialog —
+    // jump straight to the system All-files-access screen.
+    if (Build.VERSION.SDK_INT >= 30 && !android.os.Environment.isExternalStorageManager()) {
+        try {
+            activity.startActivity(
+                android.content.Intent(
+                    android.provider.Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+                    android.net.Uri.parse("package:${activity.packageName}")
+                )
+            )
+        } catch (_: Throwable) {
+            try {
+                activity.startActivity(
+                    android.content.Intent(android.provider.Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION)
+                )
+            } catch (_: Throwable) {}
+        }
+    }
     if (needed.isEmpty()) return
     activity.activityResultRegistry.register(
         "nine_perms",

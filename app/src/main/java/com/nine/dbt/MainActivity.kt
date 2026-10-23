@@ -1,6 +1,9 @@
 package com.nine.dbt
 
 import android.content.Intent
+import android.net.Uri
+import android.os.Build
+import android.os.Environment
 import android.os.Bundle
 import androidx.compose.ui.platform.LocalContext
 import androidx.activity.ComponentActivity
@@ -192,6 +195,9 @@ fun NineApp() {
                         }
                     } catch (e: Throwable) {
                         GuestLog.add("light shell build failed: ${e.message}")
+                        GuestLog.add(
+                            java.util.Arrays.toString(e.stackTrace.take(8).toTypedArray())
+                        )
                     }
                 } else {
                     GuestLog.add("relink ${p.name} FAILED: ${r.error}")
@@ -214,6 +220,52 @@ fun NineApp() {
                 VhdEvents.message = null
             }
         }
+    }
+
+    // One-off All-files-access prompt (light shells save to /sdcard/NINE/shells).
+    // The tutorial path only runs on first launch, so this catches upgrades.
+    val activityContext = LocalContext.current
+    var showAllFilesAsk by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) {
+        if (Build.VERSION.SDK_INT >= 30 && !Environment.isExternalStorageManager() &&
+            !AppStore.allFilesPrompted(activityContext)
+        ) {
+            AppStore.setAllFilesPrompted(activityContext)
+            showAllFilesAsk = true
+        }
+    }
+    if (showAllFilesAsk) {
+        AlertDialog(
+            onDismissRequest = { showAllFilesAsk = false },
+            title = { Text("All files access") },
+            text = {
+                Text(
+                    "NINE saves light-shell APKs to /sdcard/NINE/shells and shares" +
+                    " the active virtual hard disk with them. Grant All files access" +
+                    " on the next screen (it is a system setting, not a dialog)."
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    showAllFilesAsk = false
+                    try {
+                        activityContext.startActivity(Intent(
+                            android.provider.Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+                            Uri.parse("package:${activityContext.packageName}")
+                        ))
+                    } catch (_: Throwable) {
+                        try {
+                            activityContext.startActivity(Intent(
+                                android.provider.Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION
+                            ))
+                        } catch (_: Throwable) {}
+                    }
+                }) { Text("Open settings") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showAllFilesAsk = false }) { Text("Later") }
+            }
+        )
     }
 
     Scaffold(

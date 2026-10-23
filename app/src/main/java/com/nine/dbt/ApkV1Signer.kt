@@ -35,6 +35,8 @@ object ApkV1Signer {
     private val OID_COMMON_NAME = "2.5.4.3"
     private val OID_SIGNING_TIME = "1.2.840.113549.1.9.5"
     private val OID_MESSAGE_DIGEST = "1.2.840.113549.1.9.4"
+    /** PKCS#9 `content-type` signed-attribute identifier. */
+    private val OID_PKCS9_CONTENT_TYPE = "1.2.840.113549.1.9.3"
 
     // ---------- DER primitives ----------
 
@@ -84,10 +86,13 @@ object ApkV1Signer {
         fun utf8(s: String) = tlv(0x0C, s.toByteArray(Charsets.UTF_8))
         fun utctime(s: String) = tlv(0x17, s.toByteArray(Charsets.US_ASCII))
         fun algRsaOnly(oid: String) = seq(oid(oid), tlv(0x05, ByteArray(0)))
-        fun sha256AlgId() = seq(oid(OID_SHA256))
+        fun sha256AlgId() = seq(oid(OID_SHA256_RSA))
+        /** Plain SHA-256 digest AlgorithmIdentifier (no RSA wrapper). */
+        fun sha256DigestAlg() = seq(oid(OID_SHA256))
         fun nullAlg() = algRsaOnly(OID_RSA_ENCRYPTION)
 
-        private fun concat(parts: Array<out ByteArray>): ByteArray {
+        /** Raw byte concatenation, used to build the authenticated-attribute stream. */
+        fun concat(parts: Array<out ByteArray>): ByteArray {
             val out = ByteArrayOutputStream()
             parts.forEach { out.write(it) }
             return out.toByteArray()
@@ -104,7 +109,8 @@ object ApkV1Signer {
 
     fun selfSignedCertificateDer(kp: KeyPair, cn: String = "NINE Shell"): ByteArray {
         val name = Der.seq(Der.set(Der.seq(Der.oid(OID_COMMON_NAME), Der.utf8(cn))))
-        fun utc(c: Calendar): String = "%02d".format(c.get(Calendar.YEAR)) +
+        // UTCTime = YYMMDDhhmmssZ (two-digit year, seconds mandatory)
+        fun utc(c: Calendar): String = "%02d".format(c.get(Calendar.YEAR) % 100) +
             "%02d".format(c.get(Calendar.MONTH) + 1) +
             "%02d".format(c.get(Calendar.DAY_OF_MONTH)) +
             "%02d".format(c.get(Calendar.HOUR_OF_DAY)) +
@@ -146,7 +152,8 @@ object ApkV1Signer {
     fun pkcs7SignedData(content: ByteArray, certDer: ByteArray, kp: KeyPair): ByteArray {
         // authenticated attributes: contentType, signingTime, messageDigest
         val cal = Calendar.getInstance()
-        val utc = "%02d".format(cal.get(Calendar.YEAR)) +
+        // UTCTime = YYMMDDhhmmssZ (two-digit year, seconds mandatory)
+        val utc = "%02d".format(cal.get(Calendar.YEAR) % 100) +
             "%02d".format(cal.get(Calendar.MONTH) + 1) +
             "%02d".format(cal.get(Calendar.DAY_OF_MONTH)) +
             "%02d".format(cal.get(Calendar.HOUR_OF_DAY)) +
@@ -154,36 +161,47 @@ object ApkV1Signer {
             "%02d".format(cal.get(Calendar.SECOND)) + "Z"
 
         val digest = MessageDigest.getInstance("SHA-256").digest(content)
-        val attributes = Der.set(
-            Der.seq(Der.oid(OID_DASHED_DATA), Der.set(Der.oid(OID_DASHED_DATA))),
-            Der.seq(Der.oid(OID_SIGNING_TIME), Der.set(Der.utctime(utc))),
+        // Attribute ::= SEQ { type OID, values SET OF ANY }. The three
+        // attributes are concatenated (in ascending DER order) and carried in
+        // one SET: the [0] IMPLICIT tag wraps their SEQUENCEs directly — the
+        // verifier re-tags 0xA0 back to 0x31 before checking the signature.
+        val attrContent = Der.seq(Der.oid(OID_PKCS9_CONTENT_TYPE), Der.set(Der.oid(OID_DASHED_DATA))) +
+            Der.seq(Der.oid(OID_SIGNING_TIME), Der.set(Der.utctime(utc))) +
             Der.seq(Der.oid(OID_MESSAGE_DIGEST), Der.set(Der.octet(digest)))
-        )
+        val attrTlv = Der.context0(attrContent)
         val attrSig = Signature.getInstance("SHA256withRSA").run {
             initSign(kp.private)
-            update(attributes) // RFC 5652 §11.1: attributes are DER-encoded then signed
+            update(Der.set(attrContent)) // RFC 5652 §11.1: sign the SET-OF encoding
             sign()
         }
 
         // IssuerAndSerialNumber from the certificate DER:
-        // tbs fields: [0] version | INTEGER serial | AlgId | Name(issuer) | validity | Name(subject) | SPKI
-        val tbs = certContent(certDer)
-        val attrs = topLevelTlvs(tbs)
+        // outer SEQ content = tbsCertificate TLV; peel ITS TLV too, then walk
+        // the tbs fields: [0] version | INTEGER serial | AlgId | Name(issuer) |
+        // validity | Name(subject) | SPKI
+        val tbsTlv = certContent(certDer)
+        val (tbsLen, tbsOff) = readTlv(tbsTlv, 0)
+        val attrs = topLevelTlvs(tbsTlv.copyOfRange(tbsOff, tbsOff + tbsLen))
+        android.util.Log.i(
+            "NINE",
+            "sign: cert=${certDer.size}B tbsTlv=${tbsTlv.size}B tlvCount=${attrs.size} " +
+                "tlvLens=${attrs.joinToString { it.size.toString() }}"
+        )
         val serialTlv = attrs[1]
         val issuerNameTlv = attrs[3]
 
         val signerInfo = Der.seq(
             Der.int(1),
             Der.seq(issuerNameTlv, serialTlv),
-            Der.sha256AlgId(),
-            Der.context0(attributes),
+            Der.sha256DigestAlg(),
+            attrTlv,
             Der.nullAlg(),
             Der.octet(attrSig)
         )
 
         val signedData = Der.seq(
             Der.int(1),
-            Der.set(Der.sha256AlgId()),
+            Der.set(Der.sha256DigestAlg()),
             Der.seq(Der.oid(OID_DASHED_DATA)),
             Der.context0(certDer), // [0] IMPLICIT certificates
             Der.set(signerInfo)
@@ -193,9 +211,10 @@ object ApkV1Signer {
 
     // ---------- X.509 DER helpers ----------
 
-    /** Reads `Cert.tbsCertificate` bytes: SEQUENCE-store TLV[0] content. */
+    /** Reads `Cert.tbsCertificate` bytes: the outer SEQUENCE TLV's content. */
     private fun certContent(cert: ByteArray): ByteArray {
-        val (contentOff, contentLen) = readTlv(cert, 0)
+        // readTlv returns (contentLen, contentOffset)
+        val (contentLen, contentOff) = readTlv(cert, 0)
         return cert.copyOfRange(contentOff, contentOff + contentLen)
     }
 
@@ -253,6 +272,14 @@ object ApkV1Signer {
         sf.append("Created-By: 1.0 (NINE)\r\n")
         sf.append("SHA-256-Digest-Manifest: ${b64(md.digest(manifest))}\r\n")
         sf.append("\r\n")
+        // Per-entry sections in the .SF are REQUIRED by the platform's v1
+        // verifier (apksig ignores entries not named in a signer's .SF even
+        // when the whole-manifest digest verifies).
+        entries.forEach { (name, data) ->
+            sf.append("Name: $name\r\n")
+            sf.append("SHA-256-Digest: ${b64(md.digest(data))}\r\n")
+            sf.append("\r\n")
+        }
         val sfBytes = sf.toString().toByteArray(Charsets.US_ASCII)
 
         val p7 = pkcs7SignedData(sfBytes, certDer, kp)

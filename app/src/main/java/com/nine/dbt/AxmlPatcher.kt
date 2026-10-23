@@ -158,12 +158,12 @@ object AxmlPatcher {
 
     private fun readUtf8(buf: ByteBuffer, at: Int): String {
         // utf16 char count then utf8 byte count; each 1 or (0x80-prefixed) 2 bytes
-        val (firstPos, _) = readVarLen(buf, at)
-        val pos0 = at + firstPos
-        val (_, u8len) = readVarLen(buf, pos0)
-        val pos = pos0 + readVarLen(buf, pos0).first
-        val bytes = ByteArray(u8len)
-        buf.get(bytes, pos, u8len)
+        val (p1, _) = readVarLen(buf, at)
+        val (p2, u8len) = readVarLen(buf, at + p1)
+        val start = at + p1 + p2
+        // absolute-index reads only (ByteBuffer.get(byte[], off, len) applies
+        // offsets to the DESTINATION array, not the buffer — do not use here)
+        val bytes = ByteArray(u8len) { i -> buf.get(start + i) }
         return String(bytes, Charsets.UTF_8)
     }
 
@@ -175,12 +175,7 @@ object AxmlPatcher {
             len = ((len and 0x7FFF) shl 16) or (buf.getShort(pos).toInt() and 0xFFFF)
             pos += 2
         }
-        val bytes = ByteArray(len * 2)
-        buf.get(bytes, pos, len * 2)
-        val chars = CharArray(len)
-        for (i in 0 until len) chars[i] = ((bytes[i * 2].toInt() and 0xFF) or
-                ((bytes[i * 2 + 1].toInt() and 0xFF) shl 8)).toChar()
-        return String(chars)
+        return CharArray(len) { i -> buf.getShort(pos + i * 2).toInt().toChar() }.concatToString()
     }
 
     private fun readVarLen(buf: ByteBuffer, at: Int): Pair<Int, Int> {

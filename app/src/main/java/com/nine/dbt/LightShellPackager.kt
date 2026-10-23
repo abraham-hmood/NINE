@@ -7,6 +7,8 @@ import android.graphics.Canvas
 import android.graphics.Paint
 import android.graphics.RadialGradient
 import android.graphics.Shader
+import android.os.Build
+import android.os.Environment
 import androidx.core.content.FileProvider
 import java.io.ByteArrayOutputStream
 import java.io.File
@@ -40,9 +42,20 @@ object LightShellPackager {
     private const val TEMPLATE_LABEL = "NINE Shell"
     private const val PREFS = "light_shells"
 
-    /** Where finished shells land ("/sdcard/NINE/shells" equivalent). */
-    fun shellsDir(ctx: Context): File =
-        File(ctx.getExternalFilesDir(null), "NINE/shells").apply { mkdirs() }
+    /**
+     * Where finished shells land. Real shared storage (/sdcard/NINE/shells,
+     * per the NINE spec) when All-files access is granted; the app-scoped
+     * external dir otherwise — the path is logged either way.
+     */
+    fun shellsDir(ctx: Context): File {
+        val root = if (Build.VERSION.SDK_INT >= 30 && Environment.isExternalStorageManager()) {
+            File(Environment.getExternalStorageDirectory(), "NINE/shells")
+        } else {
+            File(ctx.getExternalFilesDir(null), "NINE/shells")
+        }
+        root.mkdirs()
+        return root
+    }
 
     fun sanitizePackageId(name: String): String {
         var clean = ""
@@ -141,11 +154,9 @@ object LightShellPackager {
 
         val kp = ApkV1Signer.generateKeyPair()
         val certDer = ApkV1Signer.selfSignedCertificateDer(kp)
-        val meta = ApkV1Signer.writeV1Signature(
-            entries.entries.filter { it.key != coreLibName }
-                .map { it.key to it.value },
-            certDer, kp
-        )
+        // v1 covers EVERY non-META-INF entry — the core lib must be digest-
+        // listed in MANIFEST.MF/SF or PackageInstaller refuses the install.
+        val meta = ApkV1Signer.writeV1Signature(entries.entries.map { it.key to it.value }, certDer, kp)
 
         val out = File(shellsDir(ctx), "shell-${sanitizeFileName(program.name)}.apk")
         ZipOutputStream(out.outputStream()).use { zip ->
@@ -161,10 +172,25 @@ object LightShellPackager {
         return out
     }
 
-    /** The app's own shipped libnexus_core.so (arm64-v8a). */
-    private fun nativeCoreLibrary(ctx: Context): ByteArray? =
-        File(ctx.applicationInfo.nativeLibraryDir, "libnexus_core.so")
+    /**
+     * The app's own shipped libnexus_core.so (arm64-v8a). Note: NINE ships
+     * with extractNativeLibs=false (libs page-aligned inside base.apk), so
+     * nativeLibraryDir is empty — read the entry straight out of sourceDir.
+     */
+    private fun nativeCoreLibrary(ctx: Context): ByteArray? {
+        try {
+            val apk = java.util.zip.ZipFile(File(ctx.applicationInfo.sourceDir))
+            apk.use { zip ->
+                val e = zip.getEntry("lib/arm64-v8a/libnexus_core.so")
+                    ?: zip.getEntry("lib/arm64/libnexus_core.so")
+                if (e != null) return zip.getInputStream(e).readBytes()
+            }
+        } catch (_: Throwable) {
+        }
+        // fallback: extracted layout (extractNativeLibs=true builds)
+        return File(ctx.applicationInfo.nativeLibraryDir, "libnexus_core.so")
             .takeIf { it.exists() }?.readBytes()
+    }
 
     /** PNG launcher icon generated from the program's name + color. */
     private fun programIcon(program: LibraryProgram): Bitmap {
