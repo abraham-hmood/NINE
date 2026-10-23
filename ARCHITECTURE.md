@@ -50,6 +50,18 @@ Cross-cutting subsystems:
 | `ctx.rdx` carries pd value; helper `GuestContext::rax()/rdx()` etc. | accessors for syscall shims |
 | thread-local per thread; `GuestContext::cur_block` tracks the executing block | |
 
+### 1.1 Host feature modules (`app/src/main/cpp/upscale/`)
+
+| Module | Behavior |
+|---|---|
+| `Upscaler` (singleton) | DLSS-style frame upscaler: bilinear base pass then edge-adaptive 9-tap refinement (edge magnitude gates kernel strength). Models: `.n9up` (first-party format: magic "N9UP", version 1, scale 2..8, ≤64 float32 tap weights) or `.tflite`/`.onnx` registered as opaque payloads (default kernel runs until the TFLite delegate lands). JNI: `nativeUpscalerSetModel/Status/SetEnabled`. The per-frame hook (`upscaleFrame`) activates with the G1 guest framebuffer pipeline. |
+| `GameDetector` | Scored byte-scan of the first 2 MiB: engine/d3d/GL/Vulkan/SDL/GLFW/XInput tokens (strong weights) plus saturated weak signals ("fullscreen", "fps", …); `score ≥ 35 → isGame`. Called at every `loadAndRun` for logging + JNI-exposed as `nativeDetectGame`. |
+
+| Light shell host surface | Behavior |
+|---|---|
+| `LightShellPackager` | Runtime APK surgery: template `:shell` APK from assets, `AxmlPatcher` string-pool rewrite (package → `com.nine.shell.<program>` incl. derived component names, label → program name), icon PNG replacement, payload `assets/program/**` + `lib/arm64-v8a/libnexus_core.so` + `assets/vhd_path.txt`, v1-signed by `ApkV1Signer` (fresh RSA-2048, hand-built X.509/PKCS#7 DER), saved to `<external>/NINE/shells`, installed via `PackageInstaller`; `InstallResultReceiver` then grants the shell `com.nine.dbt.vhdshare` FileProvider access to the active VHD. |
+| `AxmlPatcher` | Binary Android XML (AXML) string-pool rewriter; rebuilds the pool in UTF-8 keeping entry count (index-stable), so no resource editor ships with the app. Validated with `aapt2 dump xmltree`. |
+
 ### 1.2 Packaging / relinking future-architecture (library `.so` split)
 
 Current NFC: all guest ABI surfaces live in `libnexus_core.so`. Roadmap so per-program "relinking" does not drag the whole runtime with it, and so translated binaries can eventually run **standalone on ARM64 without any NINE runtime**:

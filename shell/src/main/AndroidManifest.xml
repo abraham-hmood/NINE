@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Light-shell template manifest. The packager (LightShellPackager + AxmlPatcher)
+  rewrites at install time:
+    - package        com.nine.shell  →  com.nine.shell.<program id>
+    - label          "NINE Shell"    →  program display name
+    - res/*/app_icon.png             →  generated program icon
+  targetSdk stays < 30 so the runtime-built v1-only signature installs.
+-->
+<!-- AGP supplies package from namespace (com.nine.shell) into the binary
+     manifest; AxmlPatcher rewrites that string at packaging time. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <application
+        android:label="NINE Shell"
+        android:icon="@mipmap/app_icon"
+        android:allowBackup="false"
+        android:extractNativeLibs="true"
+        android:theme="@android:style/Theme.Material.NoActionBar">
+
+        <activity
+            android:name=".ShellMainActivity"
+            android:exported="true"
+            android:launchMode="singleTask">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+        <activity android:name=".ShellSettingsActivity" android:exported="false" />
+        <activity android:name=".ShellLogsActivity" android:exported="false" />
+    </application>
+</manifest>

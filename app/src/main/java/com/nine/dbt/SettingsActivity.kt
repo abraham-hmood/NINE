@@ -3,9 +3,13 @@ package com.nine.dbt
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
+import android.provider.DocumentsContract
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -20,6 +24,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import java.io.File
 
 class SettingsActivity : ComponentActivity() {
     private val importLlm = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
@@ -30,14 +35,77 @@ class SettingsActivity : ComponentActivity() {
             AppStore.setLocalModelUri(this, it.toString())
         }
     }
+    private val importUpscaler = registerForActivityResult(
+        ActivityResultContracts.OpenDocumentTree()
+    ) { uri: Uri? ->
+        uri?.let { tree ->
+            try {
+                contentResolver.takePersistableUriPermission(
+                    tree, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            } catch (_: Exception) {}
+            lifecycleScope.launch(Dispatchers.IO) {
+                val res = runCatching { importUpscalerModel(tree) }
+                res.onSuccess { dir ->
+                    AppStore.setUpscalerModelDir(this@SettingsActivity, dir.absolutePath)
+                    GuestLog.info("upscaler model imported from $tree -> ${dir.absolutePath}")
+                    val st = GuestRuntime.setUpscalerModel(dir.absolutePath)
+                    upscalerStatus = GuestRuntime.upscalerStatus()
+                    GuestLog.info("upscaler status: $st")
+                }.onFailure {
+                    GuestLog.add("upscaler import failed: ${it.message}")
+                }
+            }
+        }
+    }
+
+    private var upscalerStatus by mutableStateOf("{}")
+
+    /** Copies every file from the user's picked tree into filesDir/upscaler/model. */
+    private fun importUpscalerModel(tree: Uri): File {
+        val dir = File(filesDir, "upscaler/model").apply { mkdirs() }
+        // wipe previous import so the newest folder is authoritative
+        dir.listFiles()?.forEach { it.delete() }
+        val root = DocumentsContract.buildChildDocumentsUriUsingTree(
+            tree, DocumentsContract.getTreeDocumentId(tree))
+        val cursor = contentResolver.query(
+            root,
+            arrayOf(
+                DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+                DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+                DocumentsContract.Document.COLUMN_MIME_TYPE
+            ),
+            null, null, null
+        ) ?: throw IllegalStateException("folder unreadable")
+        var copied = 0
+        cursor.use {
+            while (it.moveToNext()) {
+                val docId = it.getString(0) ?: continue
+                val name = it.getString(1) ?: continue
+                val mime = it.getString(2) ?: ""
+                if (mime == DocumentsContract.Document.MIME_TYPE_DIR) continue
+                val docUri = DocumentsContract.buildDocumentUriUsingTree(tree, docId)
+                val dest = File(dir, name)
+                contentResolver.openInputStream(docUri)?.use { input ->
+                    dest.outputStream().use { input.copyTo(it) }
+                }
+                copied++
+            }
+        }
+        GuestLog.info("upscaler import: copied $copied file(s) into ${dir.absolutePath}")
+        return dir
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
             NineTheme {
                 var useLocal by remember { mutableStateOf(AppStore.useLocal(this)) }
+                var enableDlss by remember { mutableStateOf(AppStore.enableDlss(this)) }
                 var showImport by remember { mutableStateOf(false) }
                 val imported = AppStore.localModels(this)
+                val modelStatus = remember(enableDlss) {
+                    GuestRuntime.upscalerStatus().takeIf { it != "{\"enabled\":false}" } ?: ""
+                }
                 SettingsScreen(
                     useLocal = useLocal,
                     onUseLocalChange = {
@@ -54,7 +122,15 @@ class SettingsActivity : ComponentActivity() {
                     onImportLocal = {
                         if (imported.isEmpty()) importLlm.launch(arrayOf("*/*"))
                         else showImport = true
-                    }
+                    },
+                    enableDlss = enableDlss,
+                    onEnableDlssChange = {
+                        enableDlss = it
+                        AppStore.setEnableDlss(this, it)
+                        GuestRuntime.setUpscalerEnabled(it)
+                    },
+                    onImportUpscaler = { importUpscaler.launch(null) },
+                    upscalerStatus = upscalerStatus.ifEmpty { modelStatus }
                 )
                 if (showImport) {
                     AlertDialog(
@@ -90,7 +166,11 @@ fun SettingsScreen(
     onOpenBrowser: () -> Unit,
     onOpenDebugger: () -> Unit,
     onOpenVhd: () -> Unit,
-    onImportLocal: () -> Unit
+    onImportLocal: () -> Unit,
+    enableDlss: Boolean,
+    onEnableDlssChange: (Boolean) -> Unit,
+    onImportUpscaler: () -> Unit,
+    upscalerStatus: String
 ) {
     Column(
         modifier = Modifier
@@ -129,6 +209,39 @@ fun SettingsScreen(
         SettingsButton("DEBUGGER", true, onOpenDebugger)
         Spacer(Modifier.height(10.dp))
         SettingsButton("VIRTUAL HARD DISKS", true, onOpenVhd)
+
+        Spacer(Modifier.height(24.dp))
+        Text("PERFORMANCE", color = Color(0xFF7C4DFF), fontSize = 16.sp,
+            fontWeight = FontWeight.Bold)
+        Spacer(Modifier.height(12.dp))
+        Row(
+            Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text("DLSS-style upscaling for games", color = Color.White)
+                Text(
+                    "Applies image upscaling to programs detected as games",
+                    color = Color.White.copy(alpha = 0.55f), fontSize = 11.sp
+                )
+            }
+            Switch(checked = enableDlss, onCheckedChange = onEnableDlssChange,
+                colors = SwitchDefaults.colors(checkedTrackColor = Color(0xFF00E5FF)))
+        }
+        Spacer(Modifier.height(10.dp))
+        // Greyed out + disabled while DLSS is off; enabled when on.
+        SettingsButton(
+            "IMPORT IMAGE UPSCALER MODEL (folder)",
+            enabled = enableDlss,
+            onClick = onImportUpscaler
+        )
+        Spacer(Modifier.height(6.dp))
+        Text(
+            if (upscalerStatus != "{}") "upscaler: $upscalerStatus"
+            else if (enableDlss) "no upscaler model imported yet"
+            else "enable DLSS-style upscaling to import a model",
+            color = Color.White.copy(alpha = 0.6f), fontSize = 11.sp
+        )
     }
 }
 

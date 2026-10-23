@@ -173,12 +173,26 @@ fun NineApp() {
                     r.libraries.forEach { l ->
                         GuestLog.info("  ${l.name} [${l.provider}] -> ${l.installPath}")
                     }
+                    // force all relinked (and thus light-shelled) programs onto
+                    // the user's active virtual hard disk
+                    val vhdPath = VhdManager.activeImagePath(context)
+                    if (vhdPath.isNotEmpty())
+                        ProgramLibrary.setVhdPath(context, p, vhdPath)
                     val updated = p.copy(status = "Linked")
                     ProgramLibrary.update(context, updated)
                     ProgramLibrary.saveRelinkToConfig(context, updated, r)
                     val i = programs.indexOfFirst { it.id == p.id }
                     if (i >= 0) programs[i] = updated
                     linked += p to r
+
+                    // relinked program → build + try to install a light shell
+                    try {
+                        withContext(Dispatchers.IO) {
+                            LightShellPackager.buildAndInstall(context, updated)
+                        }
+                    } catch (e: Throwable) {
+                        GuestLog.add("light shell build failed: ${e.message}")
+                    }
                 } else {
                     GuestLog.add("relink ${p.name} FAILED: ${r.error}")
                     r.unresolved.forEach { GuestLog.add("  unresolved: $it") }

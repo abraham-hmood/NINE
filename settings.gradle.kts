@@ -14,3 +14,4 @@ dependencyResolutionManagement {
 }
 rootProject.name = "NexusDBT"
 include(":app")
+include(":shell")

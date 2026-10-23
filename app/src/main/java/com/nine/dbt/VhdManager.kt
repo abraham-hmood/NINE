@@ -80,6 +80,35 @@ object VhdManager {
 
     fun dir(ctx: Context): File = File(ctx.filesDir, "vhds").apply { mkdirs() }
 
+    // ---------- active VHD (shared with light shells) ----------
+
+    private const val ACTIVE_KEY = "active_vhd"
+
+    fun setActive(ctx: Context, id: String) {
+        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+            .putString(ACTIVE_KEY, id).apply()
+        GuestLog.info("vhd: active disk set to $id")
+    }
+
+    fun activeId(ctx: Context): String? =
+        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(ACTIVE_KEY, null)
+
+    /** "The user's active VHD": explicit pick, else the newest disk. */
+    fun active(ctx: Context): Vhd? {
+        val list = list(ctx)
+        val id = activeId(ctx) ?: return list.maxByOrNull { it.createdAt }
+        return list.find { it.id == id } ?: list.maxByOrNull { it.createdAt }
+    }
+
+    /** Absolute path of the raw working image backing [v]. */
+    fun absoluteImagePath(ctx: Context, v: Vhd): File = workFile(ctx, v)
+
+    /** Path shown to users and written into light shells (vhd_path.txt). */
+    fun activeImagePath(ctx: Context): String =
+        active(ctx)?.let { workFile(ctx, it).absolutePath } ?: ""
+
+    fun setActiveFromUi(ctx: Context, v: Vhd) = setActive(ctx, v.id)
+
     // ---------- metadata ----------
 
     fun list(ctx: Context): List<Vhd> {

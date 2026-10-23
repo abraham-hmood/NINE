@@ -1,1 +1,9 @@
-build/"*.hprof" 
+build/
+.gradle/
+*.hprof
+local.properties
+*.iml
+.idea/
+.cxx/
+captures/
+.externalNativeBuild/

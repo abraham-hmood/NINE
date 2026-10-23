@@ -1,5 +1,7 @@
 #include "RuntimeBridge.h"
 #include "../diagnostics/Logger.h"
+#include "../upscale/Upscaler.h"
+#include "../upscale/GameDetector.h"
 #include <jni.h>
 #include <android/log.h>
 #include <string>
@@ -117,6 +119,25 @@ Java_com_nine_dbt_GuestRuntime_nativeLoadAndRun(JNIEnv* env, jclass, jstring jpa
     env->ReleaseStringUTFChars(jpath, path);
     if (jcache) env->ReleaseStringUTFChars(jcache, cache);
 
+    // DLSS-style upscaler plumbing: detect games on every load. The frame
+    // hook itself activates with the G1 guest framebuffer pipeline; here we
+    // surface the decision into the Logs tab so the demand loop is visible.
+    {
+        nexus::GameReport rep = nexus::GameDetector::analyzeFile(path_s);
+        if (rep.isGame && nexus::Upscaler::instance().enabled() &&
+            nexus::Upscaler::instance().hasModel()) {
+            nexus::Logger::instance().infof(nexus::LogCategory::GENERAL,
+                "game detected (%.0f pts) + DLSS-style upscaler ON: "
+                "frame output will route through upscaleFrame (x%u)",
+                rep.score, nexus::Upscaler::instance().scale());
+        } else if (rep.isGame) {
+            nexus::Logger::instance().infof(nexus::LogCategory::GENERAL,
+                "game detected (%.0f pts); upscaler %s",
+                rep.score,
+                nexus::Upscaler::instance().enabled() ? "enabled but no model imported" : "disabled in settings");
+        }
+    }
+
     // J5.3: run on background thread; this JNI blocks until done OR we spawn
     // For UI non-blocking, Kotlin launches a thread that calls this.
     std::string result;
@@ -230,6 +251,46 @@ Java_com_nine_dbt_GuestRuntime_nativeStatus(JNIEnv* env, jclass) {
     ensureVm(env);
     auto s = nexus::RuntimeBridge::instance().statusSnapshot();
     return env->NewStringUTF(s.c_str());
+}
+
+// ---------- DLSS-style upscaler + game detection ----------
+
+JNIEXPORT jstring JNICALL
+Java_com_nine_dbt_GuestRuntime_nativeDetectGame(JNIEnv* env, jclass, jstring jpath) {
+    ensureVm(env);
+    std::string path = jpath ? env->GetStringUTFChars(jpath, nullptr) : "";
+    std::string out;
+    if (!path.empty()) {
+        out = nexus::GameDetector::analyzeJson(path);
+        nexus::Logger::instance().infof(nexus::LogCategory::GENERAL,
+            "game detection: %s", out.c_str());
+    } else {
+        out = "{\"isGame\":false,\"score\":0,\"os\":\"\",\"reasons\":[\"no path\"]}";
+    }
+    return env->NewStringUTF(out.c_str());
+}
+
+JNIEXPORT jstring JNICALL
+Java_com_nine_dbt_GuestRuntime_nativeUpscalerSetModel(JNIEnv* env, jclass, jstring jdir) {
+    ensureVm(env);
+    std::string dir = jdir ? env->GetStringUTFChars(jdir, nullptr) : "";
+    bool ok = false;
+    if (!dir.empty()) ok = nexus::Upscaler::instance().setModelDir(dir);
+    (void)ok;
+    return env->NewStringUTF(
+        nexus::Upscaler::instance().statusJson().c_str());
+}
+
+JNIEXPORT jstring JNICALL
+Java_com_nine_dbt_GuestRuntime_nativeUpscalerStatus(JNIEnv* env, jclass) {
+    ensureVm(env);
+    return env->NewStringUTF(
+        nexus::Upscaler::instance().statusJson().c_str());
+}
+
+JNIEXPORT void JNICALL
+Java_com_nine_dbt_GuestRuntime_nativeUpscalerSetEnabled(JNIEnv*, jclass, jboolean jv) {
+    nexus::Upscaler::instance().setEnabled(jv == JNI_TRUE);
 }
 
 } // extern "C"

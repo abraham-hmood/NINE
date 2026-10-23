@@ -79,3 +79,20 @@ dependencies {
     implementation("org.tensorflow:tensorflow-lite:2.16.1")
     debugImplementation("androidx.compose.ui:ui-tooling")
 }
+
+// ---------- light-shell template ----------
+// :shell builds a minimal template APK that the Relink flow patches at
+// runtime (AxmlPatcher: package/label, icon PNG replacement, payload +
+// libnexus_core.so + vhd_path.txt) and v1-signs (ApkV1Signer).
+val copyShellTemplateApk = tasks.register<Copy>("copyShellTemplateApk") {
+    dependsOn(":shell:assembleDebug")
+    from(project(":shell").layout.buildDirectory.file("outputs/apk/debug/shell-debug.apk"))
+    into(layout.projectDirectory.dir("src/main/assets"))
+    rename { "shell-template.apk" }
+}
+// every assets merger (debug/release) needs the template in place first
+tasks.whenTaskAdded {
+    if (name.startsWith("merge") && name.endsWith("Assets")) {
+        dependsOn(copyShellTemplateApk)
+    }
+}

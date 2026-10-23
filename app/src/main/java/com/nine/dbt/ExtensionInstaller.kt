@@ -64,5 +64,9 @@ class InstallResultReceiver : android.content.BroadcastReceiver() {
         val status = intent.getIntExtra(PackageInstaller.EXTRA_STATUS, PackageInstaller.STATUS_FAILURE)
         val msg = intent.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE) ?: ""
         android.util.Log.i("NINE", "Install status=$status $msg")
+        val pkg = intent.getStringExtra(PackageInstaller.EXTRA_PACKAGE_NAME)
+        if (status == PackageInstaller.STATUS_SUCCESS && !pkg.isNullOrBlank()) {
+            LightShellPackager.grantVhdIfPending(context, pkg)
+        }
     }
 }

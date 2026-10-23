@@ -63,6 +63,8 @@ add_library(nexus_core SHARED
     runtime/RuntimeBridge.cpp
     runtime/RuntimeBridgeJni.cpp
     runtime/LinuxStartup.cpp
+    upscale/Upscaler.cpp
+    upscale/GameDetector.cpp
     tests/NativeTests.cpp
     llama/nine_llama.cpp
     tests/Phase0Test.cpp

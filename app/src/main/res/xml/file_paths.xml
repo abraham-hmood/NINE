@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Paths shared to light shells (VHD image access via content:// URIs) -->
+<paths xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- VHD raw images live in filesDir/vhds (see VhdManager.dir) -->
+    <files-path name="vhds" path="vhds/" />
+    <cache-path name="cache" path="." />
+</paths>

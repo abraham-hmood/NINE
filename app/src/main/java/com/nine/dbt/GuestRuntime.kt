@@ -172,6 +172,39 @@ object GuestRuntime {
         )
     }
 
+    // ---------- DLSS-style upscaler / game detection surface ----------
+
+    /**
+     * Heuristic game detection for a stored program binary.
+     * Returns native JSON: {"isGame":..,"score":..,"os":..,"reasons":[..]}
+     */
+    fun detectGame(path: String): String = try {
+        nativeDetectGame(path)
+    } catch (e: Throwable) {
+        "{\"isGame\":false,\"score\":0,\"os\":\"\",\"reasons\":[\"detector failed: ${e.message}\"]}"
+    }
+
+    /**
+     * Import an image-upscale model. [dir] is the app-side folder the user's
+     * picked tree was copied into. Returns the upscaler status JSON.
+     */
+    fun setUpscalerModel(dir: String): String = try {
+        nativeUpscalerSetModel(dir)
+    } catch (e: Throwable) {
+        "{\"enabled\":false,\"error\":\"model import failed: ${e.message}\"}"
+    }
+
+    fun upscalerStatus(): String = try {
+        nativeUpscalerStatus()
+    } catch (e: Throwable) {
+        "{\"enabled\":false}"
+    }
+
+    fun setUpscalerEnabled(v: Boolean) = try {
+        nativeUpscalerSetEnabled(v)
+    } catch (_: Throwable) {
+    }
+
     private external fun nativeInit()
     private external fun nativeLoadAndRun(path: String, cacheDir: String): String
     private external fun nativeRelink(path: String, libDirs: String): String
@@ -182,4 +215,8 @@ object GuestRuntime {
     private external fun nativeSetBreakpoint(pc: Long)
     private external fun nativeClearBreakpoints()
     private external fun nativeStatus(): String
+    private external fun nativeDetectGame(path: String): String
+    private external fun nativeUpscalerSetModel(dir: String): String
+    private external fun nativeUpscalerStatus(): String
+    private external fun nativeUpscalerSetEnabled(v: Boolean)
 }

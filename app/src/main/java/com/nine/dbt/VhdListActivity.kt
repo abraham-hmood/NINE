@@ -100,7 +100,12 @@ class VhdListActivity : ComponentActivity() {
                             selectedIds =
                                 if (v.id in selectedIds) selectedIds - v.id else selectedIds + v.id
                         },
-                        onTap = { infoVhd = it },
+                        onTap = { v ->
+                            infoVhd = v
+                            // last-viewed/tapped disk becomes the active VHD
+                            // (used by all programs and shared with light shells)
+                            VhdManager.setActive(this@VhdListActivity, v.id)
+                        },
                         onClearSelection = { selectedIds = emptySet() },
                         onDelete = { pendingDelete = true },
                         onExport = {

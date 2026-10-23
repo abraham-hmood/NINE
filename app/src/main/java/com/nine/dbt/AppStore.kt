@@ -122,4 +122,21 @@ object AppStore {
         }
         ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putString("tools", arr.toString()).apply()
     }
+
+    // ---------- DLSS-style upscaling / light shell ----------
+
+    fun enableDlss(ctx: Context): Boolean =
+        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean("enable_dlss", false)
+
+    fun setEnableDlss(ctx: Context, v: Boolean) {
+        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putBoolean("enable_dlss", v).apply()
+    }
+
+    fun upscalerModelDir(ctx: Context): String? =
+        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString("upscaler_model_dir", null)
+
+    fun setUpscalerModelDir(ctx: Context, dirPath: String) {
+        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+            .putString("upscaler_model_dir", dirPath).apply()
+    }
 }

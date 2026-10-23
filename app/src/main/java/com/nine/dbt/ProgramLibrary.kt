@@ -344,6 +344,21 @@ object ProgramLibrary {
         })
         .put("vhdInstallPaths", JSONArray(r.libraries.map { it.installPath }.distinct()))
 
+    /**
+     * Record the virtual hard disk this program must run on (the user's
+     * active VHD in NINE). Light shells read the same path from
+     * assets/vhd_path.txt; both stay in sync through relinks.
+     */
+    fun setVhdPath(ctx: Context, p: LibraryProgram, vhdPath: String) {
+        runCatching {
+            val dir = programDir(ctx, p.id)
+            val f = File(dir, "config.json")
+            val cfg = if (f.exists()) JSONObject(f.readText()) else buildConfigJson(p)
+            cfg.put("vhdPath", vhdPath)
+            f.writeText(cfg.toString(2))
+        }.onFailure { GuestLog.add("config: vhdPath persist failed: ${it.message}") }
+    }
+
     // ---------- export ----------
 
     /**
