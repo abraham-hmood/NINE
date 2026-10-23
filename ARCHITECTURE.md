@@ -59,7 +59,7 @@ Cross-cutting subsystems:
 
 | Light shell host surface | Behavior |
 |---|---|
-| `LightShellPackager` | Runtime APK surgery: template `:shell` APK from assets, `AxmlPatcher` string-pool rewrite (package → `com.nine.shell.<program>` incl. derived component names, label → program name), icon PNG replacement, payload `assets/program/**` + `lib/arm64-v8a/libnexus_core.so` + `assets/vhd_path.txt`, v1-signed by `ApkV1Signer` (fresh RSA-2048, hand-built X.509/PKCS#7 DER), saved to `<external>/NINE/shells`, installed via `PackageInstaller`; `InstallResultReceiver` then grants the shell `com.nine.dbt.vhdshare` FileProvider access to the active VHD. |
+| `LightShellPackager` | Runtime APK surgery: template `:shell` APK from assets, `AxmlPatcher` string-pool rewrite (package → `com.nine.shell.<program>` incl. derived component names, label → program name), icon PNG replacement, payload `assets/program/**` + `lib/arm64-v8a/libnexus_core.so` (read from NINE's own `sourceDir` APK — NINE ships `extractNativeLibs=false`, so `nativeLibraryDir` is empty) + `assets/vhd_path.txt`, v1-signed by `ApkV1Signer` (fresh RSA-2048, hand-built X.509/PKCS#7 DER; every non-`META-INF` entry signed), saved to `/sdcard/NINE/shells` (`MANAGE_EXTERNAL_STORAGE`, requested at tutorial end + one-off prompt; app-scoped fallback), installed via `PackageInstaller`; `InstallResultReceiver` then grants the shell `com.nine.dbt.vhdshare` FileProvider access to the active VHD. |
 | `AxmlPatcher` | Binary Android XML (AXML) string-pool rewriter; rebuilds the pool in UTF-8 keeping entry count (index-stable), so no resource editor ships with the app. Validated with `aapt2 dump xmltree`. |
 
 ### 1.2 Packaging / relinking future-architecture (library `.so` split)
