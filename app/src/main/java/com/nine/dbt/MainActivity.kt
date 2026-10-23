@@ -195,9 +195,6 @@ fun NineApp() {
                         }
                     } catch (e: Throwable) {
                         GuestLog.add("light shell build failed: ${e.message}")
-                        GuestLog.add(
-                            java.util.Arrays.toString(e.stackTrace.take(8).toTypedArray())
-                        )
                     }
                 } else {
                     GuestLog.add("relink ${p.name} FAILED: ${r.error}")

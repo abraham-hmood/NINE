@@ -103,13 +103,17 @@ class ShellSettingsActivity : Activity() {
 
         dlssSwitch.setOnCheckedChangeListener { _, checked ->
             ShellPrefs.setDlssEnabled(this, checked)
-            applyEnabled()
+            refreshStates()
             try {
                 com.nine.dbt.GuestRuntime.setUpscalerEnabled(checked)
             } catch (_: Throwable) {}
         }
 
-        setContentView(root)
+        setContentView(ScrollView(this).apply {
+            addView(col, android.view.ViewGroup.LayoutParams(
+                android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+                android.view.ViewGroup.LayoutParams.WRAP_CONTENT))
+        })
         refreshStates()
     }
 

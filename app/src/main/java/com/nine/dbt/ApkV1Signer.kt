@@ -38,6 +38,42 @@ object ApkV1Signer {
     /** PKCS#9 `content-type` signed-attribute identifier. */
     private val OID_PKCS9_CONTENT_TYPE = "1.2.840.113549.1.9.3"
 
+    // ---------- signing identity (stable across relinks) ----------
+
+    /**
+     * Loads — or creates on first use — the persistent shell-signing identity.
+     * Shells keep their package name across rebuilds, so the platform requires
+     * the same signing cert on every update; a per-relink ephemeral key would
+     * make every relink of an installed shell fail with
+     * INSTALL_FAILED_UPDATE_INCOMPATIBLE (verified on device).
+     *
+     * The key lives in the app's private filesDir as PKCS#8 + DER cert bytes
+     * (unencrypted: acceptable for a self-signed development identity; the
+     * data it protects is the shell APK itself, not user content).
+     */
+    fun loadOrCreateIdentity(ctx: android.content.Context): Pair<ByteArray, KeyPair> {
+        val dir = java.io.File(ctx.filesDir, "signing")
+        val pk8 = java.io.File(dir, "shell-signer.pk8")
+        val certF = java.io.File(dir, "shell-signer.der")
+        if (pk8.isFile && certF.isFile) {
+            try {
+                val priv = java.security.KeyFactory.getInstance("RSA").generatePrivate(
+                    java.security.spec.PKCS8EncodedKeySpec(pk8.readBytes()))
+                val cert = java.security.cert.CertificateFactory.getInstance("X.509")
+                    .generateCertificate(certF.inputStream())
+                return Pair(certF.readBytes(), KeyPair(cert.publicKey, priv))
+            } catch (_: Throwable) {
+                // corrupt store — regenerate below
+            }
+        }
+        dir.mkdirs()
+        val kp = generateKeyPair()
+        val cert = selfSignedCertificateDer(kp)
+        pk8.writeBytes(kp.private.encoded)
+        certF.writeBytes(cert)
+        return Pair(cert, kp)
+    }
+
     // ---------- DER primitives ----------
 
     private object Der {
@@ -182,11 +218,6 @@ object ApkV1Signer {
         val tbsTlv = certContent(certDer)
         val (tbsLen, tbsOff) = readTlv(tbsTlv, 0)
         val attrs = topLevelTlvs(tbsTlv.copyOfRange(tbsOff, tbsOff + tbsLen))
-        android.util.Log.i(
-            "NINE",
-            "sign: cert=${certDer.size}B tbsTlv=${tbsTlv.size}B tlvCount=${attrs.size} " +
-                "tlvLens=${attrs.joinToString { it.size.toString() }}"
-        )
         val serialTlv = attrs[1]
         val issuerNameTlv = attrs[3]
 

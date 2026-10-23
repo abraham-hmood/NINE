@@ -100,9 +100,13 @@ object LightShellPackager {
         }
         val manifestPatched = AxmlPatcher.patchStrings(
             manifest,
-            // prefix mode also rewrites the aapt2-derived component class
-            // names + permission/authority strings under the old package
-            AxmlPatcher.Patch(TEMPLATE_PACKAGE, pkgName, alsoPrefixes = true),
+            // EXACT matches only: the application package attribute must rename
+            // (that's the app's identity), but the component class names
+            // (`.ShellMainActivity` expanded by aapt2 to com.nine.shell.*)
+            // MUST stay constant — they reference classes inside the template
+            // DEX, and renaming them here breaks ClassNotFoundException-safe
+            // activity instantiation (verified on device).
+            AxmlPatcher.Patch(TEMPLATE_PACKAGE, pkgName),
             AxmlPatcher.Patch(TEMPLATE_LABEL, program.name)
         )
 
@@ -119,7 +123,9 @@ object LightShellPackager {
             File(progDir, "config.json").takeIf { it.exists() }?.readBytes() ?: "{}".toByteArray()
         payload["assets/program/execRel.txt"] = program.execRel.toByteArray()
         File(progDir, program.execRel).takeIf { it.exists() }?.let {
-            payload["assets/program/exec"] = it.readBytes()
+            // keep the exec's real relative path so the shell's extraction
+            // (which preserves names and resolves execRel.txt) finds it
+            payload["assets/program/${program.execRel}"] = it.readBytes()
         }
         program.libDirs.forEach { rel ->
             File(progDir, rel).takeIf { it.isDirectory }?.let { dir ->
@@ -152,8 +158,7 @@ object LightShellPackager {
         val coreLibName = "lib/arm64-v8a/libnexus_core.so"
         entries[coreLibName] = coreLib
 
-        val kp = ApkV1Signer.generateKeyPair()
-        val certDer = ApkV1Signer.selfSignedCertificateDer(kp)
+        val (certDer, kp) = ApkV1Signer.loadOrCreateIdentity(ctx)
         // v1 covers EVERY non-META-INF entry — the core lib must be digest-
         // listed in MANIFEST.MF/SF or PackageInstaller refuses the install.
         val meta = ApkV1Signer.writeV1Signature(entries.entries.map { it.key to it.value }, certDer, kp)
