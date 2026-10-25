@@ -22,6 +22,10 @@ struct TranslationUnit {
     bool ends_with_branch = false;
     bool ends_with_call = false;
     bool ends_with_syscall = false;
+    // Set when the block contains an instruction this emitter has no code for
+    // and only a nop placeholder was emitted. Callers must not install such a
+    // block — the interpreter has to run it instead.
+    bool unsupported = false;
 };
 
 // J2.2 Coverage process tracker
@@ -54,6 +58,7 @@ private:
     RegisterAllocator regs_;
     FlagState flags_;
     Arm64Emitter emit_;
+    bool unsupported_ = false;   // sticky within one translateBlock() call
 
     void emitPrologue();
     void emitEpilogueAndReturn();

@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <functional>
 #include <atomic>
+#include <unordered_set>
 
 namespace nexus {
 
@@ -68,6 +69,12 @@ public:
         on_syscall_ = std::move(h);
     }
 
+    // Windows ABI calls arrive as SYSCALLs in a reserved number range (see
+    // WinAbi::kCallBase). Returning true means the dispatcher handled it and
+    // left the result in ctx; false means "not mine" and the Linux path runs.
+    using AbiDispatcher = std::function<bool(int64_t, GuestContext&)>;
+    void setAbiDispatcher(AbiDispatcher h) { abi_ = std::move(h); }
+
     // When true, fill CodeCache on miss.
     void setTranslate(bool v) { do_translate_ = v; }
     // When true, never use interpreter (J1.4 pure-JIT test path).
@@ -97,11 +104,18 @@ private:
     ControlFlow cf_;
     std::function<uint64_t(uint64_t)> import_;
     std::function<int64_t(int64_t, GuestContext&)> on_syscall_;
+    AbiDispatcher abi_;
     ExecCounters counters_;
     std::atomic<bool> stop_{false};
     bool do_translate_ = true;
     bool jit_only_ = false;
     bool inline_syscalls_ = true;
+
+    // Guest PCs whose blocks contain an instruction the AArch64 emitter has
+    // no code for. They stay interpreter-only instead of being installed with
+    // nop placeholders.
+    std::unordered_set<uint64_t> untranslatable_;
+    static constexpr size_t kMaxUntranslatable = 8192;
 
     uint64_t hashRange(const uint8_t* p, size_t n) const;
     const uint8_t* resolveGuestBytes(uint64_t pc, size_t& out_len,

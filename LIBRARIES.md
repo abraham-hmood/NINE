@@ -102,6 +102,7 @@ faccessat(269)     prlimit64(302)
 | PE32+ parse/map (headers, sections) | 🟩 | `PeMapper` |
 | Base relocations (incl. DIR64, ASLR-style random base) | 🟩 | full reloc types |
 | Import table + IAT patching, delay-load imports | 🟩 | `PeImports` |
+| Export table → callable guest thunks | 🟩 | `WinAbi`: every export is a 16-byte `mov r10,rcx / mov eax,nr / syscall / ret` stub |
 | Export table (forwarders, ordinals) | 🟩 | `PeExports` |
 | PEB / TEB placement, TEB LastErrorValue, GS-based state | 🟩 | TEB block honored via FS/GS memory bases |
 | PEB LDR table registration | 🟩 | `Ntdll::ldrAdd` |
@@ -128,7 +129,10 @@ faccessat(269)     prlimit64(302)
 
 ### 2.3 kernel32 — registered exports
 
-45 exports registered with fake IAT addresses; dispatch-delivered real behavior marked 🟩.
+Every export below is bound to a real callable thunk and a native handler
+(`abi/Win32Exports.cpp`); the guest calls it with the Microsoft x64 convention
+and gets the value back in RAX/XMM0. Unknown exports of a module NINE owns are
+bound to a logging stub, so a call is a safe no-op instead of a wild jump.
 
 | Group | Implemented 🟩 | Stub 🟨 |
 |---|---|---|
@@ -138,8 +142,11 @@ faccessat(269)     prlimit64(302)
 | Errors/Info | GetLastError, SetLastError, GetCurrentProcessId, GetCurrentThreadId, IsDebuggerPresent | ExitProcess (log only) |
 | Time | QueryPerformanceCounter/Frequency, GetTickCount/64, GetSystemTimeAsFileTime | |
 | Environment | GetCommandLineA/W, GetEnvironmentVariableA, SetEnvironmentVariableA | GetStartupInfoA/W (empty block) |
-| Threads | CreateThread (1:1 host) | Sleep (no-op) |
-| Critical sections | Initialize/Enter/Leave/DeleteCriticalSection | |
+| Threads | CreateThread (1:1 host), Sleep, SwitchToThread | ExitThread (log only) |
+| Sync objects | CreateEventA/W, SetEvent, ResetEvent, WaitForSingleObject | WaitForMultipleObjects |
+| Files (extra) | GetFileType, GetFileSize(Ex), SetFilePointer(Ex), FlushFileBuffers, DeleteFileA/W | FindFirstFile* |
+| Heap | GetProcessHeap, HeapCreate/Destroy, HeapAlloc/Free/ReAlloc/Size | |
+| Critical sections | Initialize/Enter/Leave/DeleteCriticalSection, TryEnter, +SpinCount, SRW exclusive/shared | |
 | TLS | | TlsAlloc/GetValue/SetValue/Free (index registry only) |
 | Unicode | MultiByteToWideChar, WideCharToMultiByte | |
 
@@ -149,9 +156,9 @@ faccessat(269)     prlimit64(302)
 
 | DLL | Status | Notes |
 |---|---|---|
-| user32.dll | 🟨 MessageBoxA / GetDesktopWindow fake-address; no message pump | G1: message loop + SurfaceView HWND |
-| gdi32.dll | 🟨 fake addresses only | G1: software DC/framebuffer |
-| advapi32.dll | 🟨 RegOpenKeyExA returns correct failure | registry emulation later |
+| user32.dll | 🟨 all imports callable: MessageBoxA/W, window-class and window stubs, GetMessage returns 0 (clean WinMain exit), GetClientRect/GetSystemMetrics/HWND values | G1: message loop + SurfaceView HWND |
+| gdi32.dll | 🟨 callable: GetStockObject, CreateSolidBrush/Pen, SelectObject, TextOutA/W, GetDeviceCaps | G1: software DC/framebuffer |
+| advapi32.dll | 🟨 callable, honest failures: RegOpenKeyExA/W → ERROR_FILE_NOT_FOUND, RegSetValueEx → ACCESS_DENIED | registry emulation later |
 | shell32.dll / comctl32.dll / comdlg32.dll | ⬛ | unresolved imports |
 | ole32.dll / oleaut32.dll (COM) | ⬛ | vtable/AddRef/QueryInterface plumbing |
 | ws2_32.dll | ⬛ | Winsock bridge |
@@ -166,8 +173,8 @@ faccessat(269)     prlimit64(302)
 ## Part 3 — Count snapshot (keep refreshed when grids change)
 
 - Linux syscalls with real behavior: **≈60** of ~450 documented numbers
-- Windows: PE loader stack 🟩; ntdll 8 primitives 🟩; kernel32 **45 registered / ~25 with real behavior**; user32/gdi32/advapi32 🟨 stub addresses
-- ISA: running set ≈70 opcodes end-to-end; see ARCHITECTURE.md §2 for the ledger
+- Windows: PE loader stack 🟩; **every export is a callable thunk** (`WinAbi`), with ~140 native handlers across kernel32/kernelbase/ntdll and callable stubs for user32/gdi32/advapi32; unknown names are logged no-ops. Still missing: wait-multiple, sections, APC/overlapped I/O, the registry, mixed-mode unwinding, varargs marshalling
+- ISA: ≈760 of the 1208 felixcloutier.com-indexed instructions decoded + executed end-to-end (SSE4.2 string compare, ADX, BCD adjust, AES-NI, Key Locker, SHA-1/SHA-256, BMI1/BMI2, XSAVE family, RDTSC/RDTSCP/RDSEED, SHLD/SHRD, CET/TBM/RTM/Ring-0 refusals, bit-test/scan, MPX; plus the full AVX/AVX2/AVX-512 vector path — 426 distinct vector mnemonics, 453 encoding rows — and the SGX ENCLS/ENCLU/ENCLV leaves); see ARCHITECTURE.md §2.1–§2.22 for the ledger
 - **System-library inventory** (README › Coverage grids): Windows ≈80 app-linkable DLLs catalogued; NINE-side behavioral shims exist only for ntdll/kernel32/user32/gdi32/advapi32 stubs — everything else ⬛. Linux ≈55 library families catalogued; the satisfiable set is the glibc core family (loader, libc, libm, merged pthread/dl/rt/util via static-in-image + loader merge-awareness) 🟩/🟨 and libresolv 🟨, liberally everything else ⬛ demand-driven backlog for dynamic guests
 - ⬛-only rule: a DLL/library row stays ⬛ until a guest proves it needs it (REVERSE_TECHNIQUE.md); the inventories are the backlog, not a forced pre-implementation todo
 

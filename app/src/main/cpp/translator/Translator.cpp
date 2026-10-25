@@ -208,6 +208,7 @@ TranslationUnit Translator::translateBlock(const uint8_t* code, size_t len, uint
     tu.guest_start = guest_pc;
     emit_.clear();
     regs_.reset();
+    unsupported_ = false;
     emitPrologue();
 
     size_t off = 0;
@@ -253,6 +254,7 @@ TranslationUnit Translator::translateBlock(const uint8_t* code, size_t len, uint
     }
     tu.arm64 = emit_.code();
     tu.literals = emit_.literals();
+    tu.unsupported = unsupported_;
     return tu;
 }
 
@@ -470,7 +472,11 @@ void Translator::translateInsn(const Insn& in) {
         case X86Op::MOVAPS: case X86Op::ADDPS: case X86Op::MULPS:
             emitSimd(in); break;
         default:
+            // No emitter exists for this op: a nop would silently drop its
+            // effect, so mark the whole block untranslatable and let the
+            // interpreter run it.
             emit_.nop();
+            unsupported_ = true;
             OpcodeCoverage::instance().seenFallback(in.op);
             break;
     }

@@ -49,7 +49,7 @@ lives in this repository under `app/src/main/cpp/`.
 | SMC coherency | 🟢 | Exec-page tracking; stores into executable pages invalidate overlapping translations |
 | Self-mod code + counters | 🟢 | Invalidation, hit/trace/IC counters exposed to UI |
 | Linux syscall ABI | 🟡 | ~50 numbers: read/write/open*/close/mmap/mprotect/munmap/brk, exit*, pid/uid family, fstat family, getrandom, stat/lstat/fstat/newfstatat, getdents64, poll, writev/readv, uname (spoofs x86_64), `arch_prctl` FS/GS into guest ctx; futex/signals bookkeeping stubs; fork/execve → `-ENOSYS` |
-| Windows ABI | 🟡 | kernel32: 43 registered exports (~13 with real behavior — files, VirtualAlloc*, TEB last-error, CreateThread, PEB/LDR registration); ntdll: 8 Rtl primitives (heap, critical sections, SRW); user32/gdi32/advapi32 fake-address stubs |
+| Windows ABI | 🟡 | every export is a real callable thunk (`WinAbi`): 16-byte guest stub → reserved syscall → Microsoft x64 marshaller → native handler. ~140 handlers across kernel32/kernelbase/ntdll (files, memory, heap, threads, events/waits, TLS, critical sections/SRW, time, environment, ANSI/UTF-16, error codes); user32/gdi32/advapi32 callable; unknown names of a shim module become logged no-ops instead of jumping into unmapped memory |
 | Threading | 🟡 | 1:1 guest↔host threads (`clone` CLONE_VM/FS/FILES/SIGHAND/THREAD, `CreateThread`), shared CodeCache, `thread_local` GuestContext, GuestTls FS base |
 | Diagnostics | 🟢 | Ring-buffer logger (8 categories) → logcat → app log sink, guest register/memory dumps |
 | llama.cpp runtime | 🟢 | Static llama.cpp v0.7.0 fetched at configure time; `.gguf` load → greedy generate → free, JNI-exposed |
@@ -73,7 +73,9 @@ Statuses align with the audits in `DevelopmentPlan.md` and `JITImplementationPla
 - **VHD manager**: create fixed/sparse raw disk images (512–4096-byte sectors), real MBR partition table, and **genuine FAT12/16/32 formatting**, best-effort exFAT layout, stubbed NTFS/ext plus ~17 other filesystem magics; gzip compress-on-background / decompress-on-foreground lifecycle; delete and `.tar.gz` export with sidecars; **active VHD** (explicit pick via tap in the manager, else newest) recorded for all programs and shared with light shells.
 - **DLSS-style upscaling** (first-party, `app/src/main/cpp/upscale/`): bilinear base pass + edge-adaptive unsharp refinement; own `.n9up` model format (magic, version, scale, tap weights) with `.tflite`/`.onnx` accepted as opaque payloads until a real NN runtime lands. Settings → PERFORMANCE: DLSS switch + folder-picker import (copied into `files/upscaler/model`, greyed while the switch is off); the same pair exists inside light shells.
 - **Game detection** (`GameDetector`): scored byte-scan of the first 2 MiB (D3D/GL/Vulkan/SDL/GLFW/XInput/engine tokens, weak signals saturated), threshold ≥ 35 pts; runs at every `loadAndRun` and is JNI-exposed (`detectGame`) for the Library UI.
-- **Light shells** (`:shell` module + runtime APK surgery): Relink now also builds a per-program shell APK — template `assets/shell-template.apk` is patched via binary-XML string-pool rewriting (`AxmlPatcher`: unique package `com.nine.shell.<program>`, program label, derived component names), icon replaced with a generated PNG, program payload + `libnexus_core.so` + `vhd_path.txt` embedded, **v1-signed** with a throwaway self-signed RSA key (`ApkV1Signer`, hand-built X.509/PKCS#7 DER — UTCTime YY, plain SHA-256 digest alg, PKCS#9 contentType attribute, `A0` directly wrapping attribute SEQUENCEs, per-entry `.SF` sections; offline-verified against `apksigner` via `devtools/signer_check.py`), saved to `/sdcard/NINE/shells` (needs All-files access, requested from the tutorial and a one-off launch prompt; app-scoped fallback) and installed via `PackageInstaller`. Every non-`META-INF` entry including the core `.so` is covered by the signature. Shell main activity hosts a render SurfaceView + ⚙ settings (DLSS pair, LOGS viewer reading the session log file, VHD path); VHD access is granted after install through the `com.nine.dbt.vhdshare` FileProvider.
+- **Light shells** (`:shell` module + runtime APK surgery): Relink builds **one shell APK per selected program** — template `assets/shell-template.apk` is patched via binary-XML string-pool rewriting (`AxmlPatcher`: unique package `com.nine.shell.<program>`, program label, derived component names), icon replaced with a generated PNG, program payload + `libnexus_core.so` + `vhd_path.txt` embedded, **v1-signed** with a throwaway self-signed RSA key (`ApkV1Signer`, hand-built X.509/PKCS#7 DER — UTCTime YY, plain SHA-256 digest alg, PKCS#9 contentType attribute, `A0` directly wrapping attribute SEQUENCEs, per-entry `.SF` sections; offline-verified against `apksigner` via `devtools/signer_check.py`), saved to `/sdcard/NINE/shells` (needs All-files access, requested from the tutorial and a one-off launch prompt; app-scoped fallback). Every APK is built before any prompt appears, then `ShellInstallQueue` commits the `PackageInstaller` sessions **one at a time**, granting each package its VHD access (per-package `com.nine.dbt.vhdshare` grant) as its install lands. When the batch is exactly one shell, a `Run <program>?` dialog offers to launch it immediately. Every non-`META-INF` entry including the core `.so` is covered by the signature.
+- **Shell payload persistence**: Android only keeps payload files that look like part of the native-library surface, so every guest binary is mirrored as `lib/arm64-v8a/libnine_<n>.so` and mapped back to its real program path by `assets/program/payload.json`; the package manager extracts those into `nativeLibraryDir`, and the shell reads them from there (falling back to the `assets/program/**` copy when a slot is missing). This keeps executables and guest libraries present across installs instead of being dropped as non-`.so`/`.o` files.
+- **Shell UI**: plain-View activities styled like NINE (near-black `#0A0A12`, cyan `#00E5FF`/purple `#7C4DFF` accents, `9` header mark, letter-spaced mono labels, rounded stroked cards) — home shows program + live run status over the render SurfaceView, settings holds the DLSS pair / model import / VHD path / session-log entry, and the log viewer mirrors the Logs tab's monospace panel.
 
 ### JNI surfaces
 
@@ -93,7 +95,7 @@ Full named inventories live in [LIBRARIES.md](LIBRARIES.md) (Windows DLLs / Linu
 |---|---|---|---|
 | PE loader | 🟩 image map, relocs, imports incl. delay-load, exports, TLS dir, PEB/TEB/LDR, IAT | 🟨 `.pdata` parse, Load Config, resources | ⬛ debug directory, humanized SEH unwind, COM activation |
 | ntdll | 🟩 RtlAllocate/FreeHeap, critical sections, SRW, Ldr bookkeeping | 🟨 TLS helpers, NtCurrentTeb | ⬛ NtCreateFile/NtQuery*, RtlRaiseException, RtlUnwindEx, true x64 SEH |
-| kernel32 (45 registered exports) | 🟩 GetModuleHandle/ProcAddress/LoadLibrary, CreateFile/ReadFile/WriteFile/CloseHandle/GetStdHandle, VirtualAlloc/Free/Protect, GetLastError/SetLastError, GetCurrentPID/TID, QueryPerf*, GetTick*, GetSystemTimeAsFileTime, GetCommandLine, Get/SetEnvVar, MultiByte/WideChar, all four critical-section APIs, CreateThread, IsDebuggerPresent | 🟨 ExitProcess (log), Sleep (no-op), GetStartupInfo, TlsAlloc/Get/Set/Free (registry only) | ⬛ CreateProcess, file mapping/overlapped I/O, FindFirstFile*, Synchronization (WaitFor*), FormatMessage, VirtualQuery, console/full codepages |
+| kernel32 (callable thunks) | 🟩 GetModuleHandle/ProcAddress/LoadLibrary/FreeLibrary/GetModuleFileNameA/W, CreateFileA/W/ReadFile/WriteFile/CloseHandle/GetStdHandle/GetFileType/GetFileSize(Ex)/SetFilePointer(Ex)/FlushFileBuffers/DeleteFile, VirtualAlloc/Free/Protect/Query, GetLastError/SetLastError, GetCurrentProcess/Thread/PID/TID, IsDebuggerPresent, QueryPerf*/GetTick*, GetSystemTime(AsFileTime)/GetLocalTime, GetCommandLineA/W, Get/SetEnvVar + GetEnvironmentStringsW, MultiByte/WideChar, lstrlen/lstrcpy/lstrcmp, all critical-section + SRW APIs, CreateThread/Sleep/SwitchToThread, CreateEventA/W/SetEvent/ResetEvent/WaitForSingleObject, TLS, heap (GetProcessHeap/HeapAlloc/Free/ReAlloc/Size), Interlocked*, GetSystemInfo/GetVersion/IsProcessorFeaturePresent, EncodePointer/DecodePointer, OutputDebugString | 🟨 ExitProcess/ExitThread (logged, no teardown), x87 returns | ⬛ CreateProcess, file mapping/overlapped I/O, FindFirstFile*, WaitForMultipleObjects, FormatMessage, console/codepages, varargs marshalling |
 | user32 | 🟨 MessageBoxA / GetDesktopWindow fake-address | ⬛ message pump, windows, input | G1: SurfaceView HWND + software GDI |
 | gdi32 | ⬛ anything realizer-level | 🟨 fake addresses | G1 software DC/framebuffer |
 | advapi32 | 🟨 RegOpenKeyExA failure-correct | ⬛ registry emulation, LSA | |
@@ -110,8 +112,8 @@ Every DLL a Windows app can link against, grouped by purpose. 🟩 = NINE implem
 | Library | Purpose | Status |
 |---|---|---|
 | ntdll.dll | Native API, RTL heap/critical-sections, LDR/PEB, SEH base | 🟨 (8 RTL primitives + Ldr real; most `Nt*` ⬛) |
-| kernel32.dll | Base API: process/thread/memory/file/sync/console | 🟨 (45 registered exports, ~25 with real behavior) |
-| kernelbase.dll | Win10+ merged kernel32/advapi32 bodies | ⬛ |
+| kernel32.dll | Base API: process/thread/memory/file/sync/console | 🟩 callable thunks, ~70 handlers (see the Windows grid above) |
+| kernelbase.dll | Win10+ merged kernel32/advapi32 bodies | 🟩 forwards to the same handlers as kernel32 |
 | win32u.dll | Win10+ syscall layer for user32/gdi32 | ⬛ |
 | user32.dll | Windows, message loop, input, hotkeys, timers | 🟨 (2 fake-address stubs) |
 | gdi32.dll | Device contexts BitBlt/GDI raster | 🟨 (fake addresses) |
@@ -243,26 +245,61 @@ What a dynamically linked ELF can `DT_NEEDED`. 🟩 = satisfiable today (in-imag
 | Family | State |
 |---|---|
 | Decoding infrastructure (prefixes, ModRM/SIB incl. idx=4 trap + abs32 disp, REX, RIP-relative, FS/GS bases) | 🟩 (VEX/EVEX structurally detected → 🟨 placeholders) |
-| MOV family (88–8B, A0–A3, B8–BF, C6/C7, 63 MOVSXD, 98 CWDE/CDQE, 99 CDQ, XCHG 86/87/90+r) | 🟩 (BSWAP / MOVBE ⬛) |
+| MOV family (88–8B, A0–A3, B8–BF, C6/C7, 63 MOVSXD, 98 CWDE/CDQE, 99 CDQ, XCHG 86/87/90+r) | 🟩 (BSWAP, MOVBE, MOVDIRI/MOVDIR64B 🟩) |
 | ALU (00–3B all 8 groups + eAX-imm 04-3D forms + 80/81/83 imm) | 🟩 with true ADC/SBB carry |
+| ADX (ADCX/ADOX 0F 38 F6), ASCII/BCD adjust (AAA/AAS/AAM/AAD, DAA/DAS) | 🟩 |
+| Bit test/scan: BT/BTS/BTR/BTC, BSF/BSR, TZCNT/LZCNT, BSWAP | 🟩 |
+| BMI1: ANDN, BLSI, BLSMSK, BLSR, BEXTR, BZHI (real VEX C4/C5 decoding) | 🟩 |
+| Flag control CLC/STC/CMC/CLI/STI/CLD/STD/CLAC/STAC, cache hints CLFLUSH/CLFLUSHOPT/CLWB/CLDEMOTE | 🟩 |
+| MPX bound registers: BNDMK/BNDMOV/BNDCL/BNDCU/BNDCN | 🟩 (BNDLDX/BNDSTX 🟨, no bound tables) |
+| Legacy/compat-only ARPL/BOUND (63/62) | 🟨 (`setCompat32(true)` decode path) |
 | TEST/INC/DEC/NEG/NOT, grp3 F6/F7 MUL/IMUL/DIV/IDIV, IMUL 2/3-op + 0F AF | 🟩 |
 | Shifts C0/C1/D0–D3 (SHL/SHR/SAR/ROL/ROR), FF/F-shifts, FE/FF inc/dec/jmp/call/push mem | 🟩 (RCL/RCR, SHLD/SHRD ⬛) |
-| PUSH/POP (incl. 8F /0, moffs store), LEAVE | 🟩 (ENTER ⬛) |
-| Jcc (all 16, near+short), CMOVcc, SETcc, JMP/CALL/RET (± imm16) | 🟩 (LOOP/JECXZ ⬛) |
-| String ops MOVS/STOS/LODS/SCAS 8/16/32 with FS/GS segment override | 🟩 (CMPS ⬛; REP loops 🟨) |
-| RMW atomics CMPXCHG 0F B0/B1, XADD 0F C0/C1 | 🟩 (CMPXCHG8B/16B ⬛; true LOCK-multicore atomics 🟨) |
-| SSE dataplane for glibc startup: MOVD/MOVQ/MOVAPS-family 128-bit moves/MOVLPS/MOVHPS/PUNPCKLDQ/LQDQ/HQDQ/PXOR | 🟩 (MOVAPS/ADDPS/MULPS sampled 🟨) |
-| x87 FPU (entire x87 family) | ⬛ |
-| SSE1/2/3/SSSE3/4.1/4.2 beyond what glibc startup touches | ⬛ |
-| AVX / VEX.128+256, AVX2, AVX-512 (VEX_OP/EVEX_OP placeholders) | ⬛ |
-| System: endbr64, UD2, INT3, CPUID (synthetic), SYSCALL routing | 🟩 (RDTSC/RDMSR/fences/WAIT variants ⬛) |
-| PAUSE | 🟨 treated as nop |
+| PUSH/POP (incl. 8F /0, moffs store), LEAVE, ENTER (frame chain, level & 31) | 🟩 |
+| Jcc (all 16, near+short), CMOVcc, SETcc, JMP/CALL/RET (± imm16) | 🟩 |
+| LOOP/LOOPE/LOOPNE/JRCXZ (E0–E3, RCX counter) | 🟩 |
+| String ops MOVS/STOS/LODS/SCAS/CMPS 8/16/32/64 with FS/GS segment override, REPE/REPNE | 🟩 (REP loops 🟨) |
+| RMW atomics CMPXCHG 0F B0/B1, CMPXCHG8B/16B 0F C7 /1, XADD 0F C0/C1 | 🟩 (true LOCK-multicore atomics 🟨) |
+| SSE dataplane for glibc startup: MOVD/MOVQ/MOVAPS-family 128-bit moves/MOVLPS/MOVHPS/PUNPCKLDQ/LQDQ/HQDQ/PXOR | 🟩 |
+| Scalar/lane moves: MOVSS/MOVSD (merge vs zero), MOVHLPS/MOVLHPS, MOVLPD/MOVHPD, MOVDDUP/MOVSLDUP/MOVSHDUP, MOVMSKPS/MOVMSKPD | 🟩 |
+| SSE/SSE2/SSE3 FP add: ADDPS/ADDPD/ADDSS/ADDSD, ADDSUBPS/ADDSUBPD | 🟩 |
+| SIMD logical/blends: ANDPS/ANDPD/ANDNPS/ANDNPD, ORPS/ORPD, BLENDPS/BLENDPD, BLENDVPS/BLENDVPD, PBLENDVB/PBLENDW | 🟩 |
+| SIMD multiply/min/max: MULPS/MULPD/MULSS/MULSD, MINPS/MINPD/MINSS/MINSD, MAXPS/MAXPD/MAXSS/MAXSD (NaN → second source) | 🟩 |
+| Packed integer: PABSB/W/D/Q, PACKSSWB/SSDW/USWB/USDW, PADDB/W/D/Q, PADDSB/W, PADDUSB/W, PAVGB/W, PAND/PANDN, PALIGNR, PCMPEQB/W/D, PCLMULQDQ, MPSADBW | 🟩 |
+| Non-temporal / direct stores: MOVNTPS/MOVNTPD/MOVNTDQ/MOVNTQ/MOVNTI/MOVNTDQA, MOVDIRI/MOVDIR64B, MASKMOVDQU | 🟩 (hints collapse to plain stores) |
+| SSE divides + horizontal: DIVPS/DIVPD/DIVSS/DIVSD, HADDPS/HADDPD, HSUBPS/HSUBPD | 🟩 |
+| SSE4.1 dot product/extract: DPPS/DPPD (imm8 lane masks), EXTRACTPS | 🟩 |
+| GFNI: GF2P8MULB, GF2P8AFFINEQB, GF2P8AFFINEINVQB (GF(2^8), AES polynomial) | 🟩 |
+| AES-NI: AESENC/AESENCLAST/AESDEC/AESDECLAST/AESIMC/AESKEYGENASSIST | 🟩 |
+| Key Locker: AES{ENC,DEC}{128,256}KL + AES{ENC,DEC}WIDE{128,256}KL | 🟩 (NINE software handle; ARCHITECTURE.md §2.14) |
+| SSE/SSE2 compare + convert: CMPPS/CMPPD/CMPSS/CMPSD, COMISS/COMISD, CVT{DQ2PD,DQ2PS,PS2DQ,PS2PD,SD2SS,SS2SD,SD2SI,SS2SI,SI2SD,SI2SS,TTPD2DQ,TSD2SI,TTSS2SI}, CRC32 (CRC-32C) | 🟩 (MMX-destination CVT*2PI decoded, refused) |
+| CPUID (0F A2) synthesized leaf set, CLTS/CLUI/CLRSSBSY privileged faults | 🟩 (deterministic model, ARCHITECTURE.md §2.10.1) |
+| x87 FPU (D8–DF): FLD/FST/FSTP/FILD/FIST/FISTP/FISTTP/FBLD/FBSTP, FADD…FDIVR (m32/m64/m16-int + ST(i) forms), FCOM/FUCOM/FCOMI/FCOMIP, FTST/FXAM/FXTRACT/FSCALE/FPREM/FPREM1/FRNDINT/FSQRT/FCHS/FABS, FSIN/FCOS/FSINCOS/FPTAN/FPATAN/F2XM1/FYL2X/FYL2XP1, FLD1/FLDZ/FLDPI/FLDL2E/FLDL2T/FLDLG2/FLDLN2, FLDCW/FNSTCW/FLDENV/FNSTENV/FNSAVE/FRSTOR/FNCLEX/FNINIT/FNOP/FWAIT/FXCH/FFREE/FCMOVcc, FXSAVE/FXRSTOR, EMMS | 🟩 (80-bit register file + control/status/tag words, ARCHITECTURE.md §2.9) |
+| AVX-512 opmask registers: KAND/KANDN/KOR/KXOR/KXNOR/KNOT/KADD/KUNPCK/KTEST/KORTEST/KSHIFTL/KSHIFTR/KMOV (k0–k7) | 🟩 (zmm/EVEX now covered by §2.21) |
+| SSE4.1 insert: INSERTPS (lane select + zero mask) | 🟩 |
+| SSE loads/stores: LDDQU, LDMXCSR (MXCSR is live; rounding control not applied yet) | 🟩 |
+| I/O and privileged batch: IN/INS, INV D/INVLPG/INVPCID, INCSSPD/Q, INT n/INT1/INTO/IRET, LDTILECFG — decoded exactly, then the fault real hardware raises at CPL 3 | 🟩 |
+| LAHF (AH ← SF:ZF:0:AF:0:PF:1:CF), LAR (canonical long-mode selectors), LDS (compat mode) | 🟩 (LDS 🟨) |
+| Packed integer (§2.18): PCMPEQ/PCMPGT (B/W/D/Q), PSUB{S,US}, PUNPCK{L,H}, PSHUFD/HW/LW/W, PSHUFB, PSLL/PSRL/PSRA (W/D/Q, imm and register count), PSLLDQ/PSRLDQ, PMUL{LW,HW,HUW,LD,LQ,UDQ,DQ,HRSW}, PMADDWD/PMADDUBSW, PMIN/PMAX (B/W/D/Q signed and unsigned), PMOVMSKB, PMOVSX*/PMOVZX*, PEXTRB/W/D/Q, PINSRB/W/D/Q, PSIGN, PSADBW, PHADD/PHSUB(+SW), PHMINPOSUW, PTEST, POR | 🟩 |
+| SSE4.2 string compare: PCMPESTRI/PCMPESTRM (EAX/EDX lengths), PCMPISTRI/PCMPISTRM (NUL lengths), all four aggregations and polarities | 🟩 |
+| GPR/system: POPCNT, RCL/RCR, PUSHFQ/POPFQ, PUSH imm32/imm8, PUSHA/POPA (#UD), RDFSBASE/RDGSBASE, RDMSR/RDPMC (#GP), RDPID, RDPKRU/PCONFIG/PTWRITE (#UD), RDRAND, PDEP/PEXT, PREFETCH/PREFETCHW/PREFETCHh | 🟩 |
+| SSE1/2/3/SSSE3/4.1/4.2 beyond adds/AES/compare/convert | 🟨 (packed integer, SSE4.2 string ops, sqrt/sub/unpack/round/rsqrt done — §2.18/§2.20) |
+| AVX / VEX.128+256, AVX2: full VEX data path with 32 × 64-byte ymm/zmm registers — moves, packed integer, FP arithmetic, shifts, shuffles/permutes, blends, conversions, FMA, AES/CLMUL/GFNI, gather/scatter, crypto (ARCHITECTURE.md §2.21) | 🟩 |
+| EVEX / AVX-512: zmm16-31, k0-k7 writemasks with merge/zeroing, broadcast, disp8×N, ternary logic, VPTERNLOG, VPCMP*, VFPCLASS, VCOMPRESS/VPEXPAND, VPMOV* narrowing (453 encoding rows) | 🟩 (no SAE/ER) |
+| SGX: ENCLS (ECREATE/EADD/EAUG/EBLOCK/EDBGRD/EDBGWR/EEXTEND/EINIT/ELDB/ELDU/ELDBC/ELDUC/EMODPR/EMODT/EPA/ERDINFO/EREMOVE/ETRACK/ETRACKC/EWB), ENCLU (EACCEPT/EACCEPTCOPY/EDECCSSA/EENTER/EEXIT/EGETKEY/EMODPE/EREPORT/ERESUME), ENCLV (EDECVIRTCHILD/EINCVIRTCHILD/ESETCONTEXT) | 🟩 (§2.22; privileged leaves #UD at CPL 3) |
+| System: ENDBR32/ENDBR64, UD2/UD0/UD1, INT3, CPUID (synthetic), SYSCALL routing, HLT, RDMSR/RDPMC (#GP at CPL 3), RDTSC/RDTSCP/RDSEED, XGETBV/XSETBV, XSAVE/XRSTOR/XSAVEC/XSAVEOPT (+ XSAVES/XRSTORS faults), XTEST/XBEGIN/XEND/XABORT, SERIALIZE | 🟩 (ARCHITECTURE.md §2.20) |
+| Scalar/system §2.20: SAHF, SGDT/SIDT/SLDT/STR/SMSW/VERR/VERW, SHLD/SHRD, RORX, SHLX/SARX/SHRX, SQRT*, SUB*, UNPCK{PS,PD}, ROUND*, RSQRT*, STMXCSR, SHA1*/SHA256*, RDSSPD/Q, RSTORSSP, WRSS/WRUSS, TPAUSE/UMONITOR/UMWAIT, WRFSBASE/WRGSBASE, VZEROUPPER/VZEROALL, AMD TBM (TZMSK/T1MSKC), RSM/SEAM*/STGI/CLGI/SYSENTER/SYSEXIT/SYSRET/SWAPGS/WRMSR/WBINVD (#GP or #UD as hardware does) | 🟩 |
+| Descriptor/status loads: LGDT/LIDT/LLDT/LTR/LMSW (#GP), LSL, LFS/LGS/LSS/LES (offset half), MOV to/from CR/DR (#GP), MONITOR/MWAIT (#GP) | 🟩 |
+| Fences LFENCE/MFENCE/SFENCE, LOCK prefix | 🟩 (ordered no-ops for one guest CPU) |
+| MULX (RDX × r/m → reg:vvvv, flags untouched) | 🟩 |
+| Restricted-by-CR4 forms: ENQCMD/ENQCMDS, ENCODEKEY128/256 (#UD), HRESET (#GP) | 🟩 decoded exactly, then the fault real hardware raises |
+| PAUSE | 🟩 retires as NOP |
 
 ## What it can do today
 
 - **Load a statically linked x86-64 Linux ELF from storage and run it end-to-end**, through the interpreter-backed execution loop, and see its `hello world` stdout in the Logs tab — fully offline, zero external compatibility layers.
 - Relink an ELF against bundled guest libraries, get a JSON report of resolved/unresolved symbols, and package the result for distribution.
-- Load PE32+ executables: mapped, rebased (ASLR-style), imports patched against the kernel32/ntdll stubs; simple console apps that use implemented APIs (`WriteFile`, `ExitProcess`, `VirtualAlloc`, …) work.
+- Load PE32+ executables: mapped, rebased (ASLR-style), and every imported function patched to a **real callable thunk** that marshals the Microsoft x64 convention into a native handler — simple console apps that use implemented APIs (`WriteFile`, `ExitProcess`, `VirtualAlloc`, …) work, and a call to an API NINE has not written yet is a logged no-op rather than a jump into unmapped memory.
 - Warm-start repeated runs from the **persistent translation cache**, with SMC-safety and two guest threads running concurrently.
 - Chat with a cloud LLM of your choice (or a local GGUF if the llama build is linked), have it parse tool calls in essentially any model's format, execute file/search tools, and compile/apply patches for extensions.
 - Create, format, compress, and export virtual disk images for future program installation.

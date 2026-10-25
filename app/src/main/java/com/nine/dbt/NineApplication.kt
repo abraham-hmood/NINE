@@ -25,6 +25,8 @@ class NineApplication : Application() {
     override fun onCreate() {
         super.onCreate()
 
+        BuiltinPrograms.ensureInstalled(this)
+
         previousHandler = Thread.getDefaultUncaughtExceptionHandler()
         Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
             val msg = "FATAL uncaught on '${thread.name}': " +

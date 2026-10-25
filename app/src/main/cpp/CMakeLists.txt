@@ -40,6 +40,10 @@ add_library(nexus_core SHARED
     translator/Arm64Emitter.cpp
     translator/ControlFlow.cpp
     translator/CodeCache.cpp
+    aot/AotCompiler.cpp
+    aot/AotHelpers.cpp
+    aot/AotRuntime.cpp
+    aot/AotRelink.cpp
     translator/SimdAtomics.cpp
     loader/pe/PeParser.cpp
     loader/pe/PeMapper.cpp
@@ -51,6 +55,8 @@ add_library(nexus_core SHARED
     abi/Vdso.cpp
     abi/Threading.cpp
     abi/Ntdll.cpp
+    abi/WinAbi.cpp
+    abi/Win32Exports.cpp
     abi/Kernel32.cpp
     abi/OtherDlls.cpp
     abi/Seh.cpp
@@ -58,6 +64,9 @@ add_library(nexus_core SHARED
     runtime/GuestContext.cpp
     runtime/SmcCoherency.cpp
     runtime/InsnInterpreter.cpp
+    runtime/X87Exec.cpp
+    runtime/VecExec.cpp
+    runtime/Sgx.cpp
     runtime/HostTrampoline.cpp
     runtime/MemHelpers.cpp
     runtime/RuntimeBridge.cpp

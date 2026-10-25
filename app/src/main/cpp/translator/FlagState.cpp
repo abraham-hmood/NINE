@@ -57,7 +57,10 @@ void FlagState::compute() {
     bool sf = (res & sign) != 0;
     bool pf = parity(static_cast<uint8_t>(res));
 
-    rflags_ = 0x202;
+    // Preserve everything the arithmetic producer does not own (IF, DF, AC,
+    // IOPL, ...) so a CLI/STD/STAC before this instruction is not undone by
+    // lazily computing the arithmetic flags afterwards.
+    rflags_ = (rflags_ & ~0x8D5ULL) | 0x2;
     if (cf) rflags_ |= 1ULL << 0;
     if (pf) rflags_ |= 1ULL << 2;
     if (af) rflags_ |= 1ULL << 4;
@@ -81,7 +84,9 @@ uint64_t FlagState::materialize() {
 
 void FlagState::setRaw(uint64_t rflags) {
     producer_.valid = false;
-    rflags_ = rflags | 0x202;
+    // Bit 1 is reserved-set; IF and the other system flags are owned by the
+    // caller (CLC/STC/CLI/STI/CLD/STD/STAC/CLAC), not forced on here.
+    rflags_ = rflags | 0x2;
     materialized_ = true;
 }
 

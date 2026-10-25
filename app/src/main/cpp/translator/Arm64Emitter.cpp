@@ -87,6 +87,36 @@ void Arm64Emitter::mov_imm64(int rd, uint64_t imm) {
     }
 }
 
+void Arm64Emitter::mov_imm32(int rd, uint32_t imm) {
+    movz(rd, uint16_t(imm & 0xFFFF), 0, false);
+    if (imm >> 16) movk(rd, uint16_t((imm >> 16) & 0xFFFF), 1, false);
+}
+
+void Arm64Emitter::b(int off_insns) {
+    emit(0x14000000u | (static_cast<uint32_t>(off_insns) & 0x03FFFFFFu));
+}
+void Arm64Emitter::b_cond(int cond, int off_insns) {
+    emit(0x54000000u | ((static_cast<uint32_t>(off_insns) & 0x7FFFFu) << 5) |
+         (static_cast<uint32_t>(cond) & 0xF));
+}
+void Arm64Emitter::cbz(int rt, int off_insns) {
+    emit(0xB4000000u | ((static_cast<uint32_t>(off_insns) & 0x7FFFFu) << 5) |
+         (static_cast<uint32_t>(rt) & 0x1F));
+}
+void Arm64Emitter::cbnz(int rt, int off_insns) {
+    emit(0xB5000000u | ((static_cast<uint32_t>(off_insns) & 0x7FFFFu) << 5) |
+         (static_cast<uint32_t>(rt) & 0x1F));
+}
+void Arm64Emitter::rev_x(int rd, int rn)    { emit(0xDAC00C00u | (rn << 5) | rd); }
+void Arm64Emitter::rev_w(int rd, int rn)    { emit(0x5AC00800u | (rn << 5) | rd); }
+void Arm64Emitter::rev16_w(int rd, int rn)  { emit(0x5AC00400u | (rn << 5) | rd); }
+void Arm64Emitter::rev32_x(int rd, int rn)  { emit(0xDAC00800u | (rn << 5) | rd); }
+void Arm64Emitter::tst_reg(int rn, int rm)  { emit(0xEA00001Fu | (rm << 16) | (rn << 5)); }
+void Arm64Emitter::mvn_reg(int rd, int rm, bool sf64) {
+    // ORN Rd, ZR, Rm
+    emit((sf64 ? 0xAA2003E0u : 0x2A2003E0u) | (rm << 16) | rd);
+}
+
 void Arm64Emitter::cmp_reg(int rn, int rm, bool sf64) {
     // SUBS XZR, Rn, Rm
     emit((sf64 ? 0xEB000000u : 0x6B000000u) | (rm << 16) | (rn << 5) | 31);

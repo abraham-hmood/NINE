@@ -83,7 +83,7 @@ class VhdListActivity : ComponentActivity() {
                 }
                 Scaffold(
                     containerColor = Color(0xFF0A0A12),
-                    snackbarHost = { SnackbarHost(snackbarHostState) },
+                    snackbarHost = { DismissibleSnackbarHost(snackbarHostState) },
                     floatingActionButton = {
                         FloatingActionButton(
                             onClick = { startActivity(Intent(this, VhdCreateActivity::class.java)) },

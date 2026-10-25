@@ -186,22 +186,33 @@ fun NineApp() {
                     ProgramLibrary.saveRelinkToConfig(context, updated, r)
                     val i = programs.indexOfFirst { it.id == p.id }
                     if (i >= 0) programs[i] = updated
-                    linked += p to r
-
-                    // relinked program → build + try to install a light shell
-                    try {
-                        withContext(Dispatchers.IO) {
-                            LightShellPackager.buildAndInstall(context, updated)
-                        }
-                    } catch (e: Throwable) {
-                        GuestLog.add("light shell build failed: ${e.message}")
-                    }
+                    linked += updated to r
                 } else {
                     GuestLog.add("relink ${p.name} FAILED: ${r.error}")
                     r.unresolved.forEach { GuestLog.add("  unresolved: $it") }
                 }
             }
-            if (linked.isNotEmpty()) {
+
+            // Build one light shell per relinked program up-front, then hand
+            // the whole batch to the install queue (Android only shows one
+            // installer prompt at a time, so they are committed sequentially).
+            val builds = if (linked.isEmpty()) emptyList() else withContext(Dispatchers.IO) {
+                linked.mapNotNull { (p, _) ->
+                    runCatching { LightShellPackager.buildShell(context, p) }
+                        .onFailure {
+                            GuestLog.add("light shell build failed for ${p.name}: ${it.message}")
+                        }
+                        .getOrNull()
+                }
+            }
+            if (builds.isNotEmpty()) {
+                GuestLog.info(
+                    "relink: built ${builds.size} light shell(s) " +
+                        "for ${targets.size} selected program(s)"
+                )
+                ShellInstallQueue.start(context, builds)
+            } else if (linked.isNotEmpty()) {
+                // Nothing installable — fall back to the deployable zip export.
                 pendingPackage = linked
                 packageLauncher.launch("nine-relinked.zip")
             }
@@ -265,8 +276,40 @@ fun NineApp() {
         )
     }
 
+    // A single freshly installed shell offers to launch itself. The install
+    // result arrives in a broadcast receiver, so ShellEvents carries the
+    // request back to the UI.
+    ShellEvents.pendingRun?.let { req ->
+        AlertDialog(
+            onDismissRequest = { ShellEvents.pendingRun = null },
+            title = { Text("Run ${req.programName}?") },
+            text = {
+                Text(
+                    "${req.programName} is installed as its own light shell. " +
+                        "Open it now?"
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    ShellEvents.pendingRun = null
+                    if (!ShellEvents.launch(activityContext, req)) {
+                        scope.launch {
+                            snackbarHostState.showSnackbar(
+                                "${req.programName} is not launchable yet — open it from the launcher",
+                                duration = SnackbarDuration.Long
+                            )
+                        }
+                    }
+                }) { Text("Run") }
+            },
+            dismissButton = {
+                TextButton(onClick = { ShellEvents.pendingRun = null }) { Text("Later") }
+            }
+        )
+    }
+
     Scaffold(
-        snackbarHost = { SnackbarHost(snackbarHostState) },
+        snackbarHost = { DismissibleSnackbarHost(snackbarHostState) },
         bottomBar = {
             NavigationBar(
                 containerColor = Color(0xFF0D0D14),

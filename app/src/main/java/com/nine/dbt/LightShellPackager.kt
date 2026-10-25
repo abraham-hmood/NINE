@@ -10,6 +10,8 @@ import android.graphics.Shader
 import android.os.Build
 import android.os.Environment
 import androidx.core.content.FileProvider
+import org.json.JSONArray
+import org.json.JSONObject
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.util.zip.ZipEntry
@@ -72,17 +74,24 @@ object LightShellPackager {
         name.filter { it.isLetterOrDigit() || it == ' ' || it == '-' }
             .replace(Regex(" +"), " ").trim().take(48).ifEmpty { "app" }
 
-    /** Builds + installs the light shell for [program]; throws on failure. */
-    fun buildAndInstall(ctx: Context, program: LibraryProgram) {
+    /** One built shell APK, ready for the install queue. */
+    data class ShellBuild(
+        val program: LibraryProgram,
+        val apk: File,
+        val packageName: String
+    )
+
+    /**
+     * Builds the light shell for [program] without installing it; throws on
+     * failure. One shell per selected program is built up-front so a
+     * multi-program relink produces every APK before the first install
+     * prompt appears.
+     */
+    fun buildShell(ctx: Context, program: LibraryProgram): ShellBuild {
         GuestLog.info("light shell: building for ${program.name}…")
         val apk = build(ctx, program)
         GuestLog.info("light shell: apk saved at ${apk.absolutePath} (${apk.length()} bytes)")
-        rememberPendingGrant(ctx, program)
-        ExtensionInstaller.installApk(ctx, apk)
-        GuestLog.info(
-            "light shell: install session committed for ${shellPackageName(program.name)} " +
-            "— confirm the Android install prompt to finish"
-        )
+        return ShellBuild(program, apk, shellPackageName(program.name))
     }
 
     fun build(ctx: Context, program: LibraryProgram): File {
@@ -116,21 +125,25 @@ object LightShellPackager {
 
         val vhdPath = VhdManager.activeImagePath(ctx)
 
-        // program payload
+        // program payload — text files as assets, binaries additionally
+        // mirrored into lib/<abi>/ as *.so (see the payload.json block below)
         val progDir = ProgramLibrary.programDir(ctx, program.id)
         val payload = LinkedHashMap<String, ByteArray>()
         payload["assets/program/config.json"] =
             File(progDir, "config.json").takeIf { it.exists() }?.readBytes() ?: "{}".toByteArray()
         payload["assets/program/execRel.txt"] = program.execRel.toByteArray()
-        File(progDir, program.execRel).takeIf { it.exists() }?.let {
-            // keep the exec's real relative path so the shell's extraction
-            // (which preserves names and resolves execRel.txt) finds it
-            payload["assets/program/${program.execRel}"] = it.readBytes()
+
+        // Guest binaries keep their real relative path so extraction
+        // reproduces the program's own layout (bin/, lib/, ...).
+        val binaries = LinkedHashMap<String, ByteArray>()
+        File(progDir, program.execRel).takeIf { it.isFile }?.let {
+            binaries[program.execRel] = it.readBytes()
         }
         program.libDirs.forEach { rel ->
             File(progDir, rel).takeIf { it.isDirectory }?.let { dir ->
                 dir.listFiles()?.filter { it.isFile }?.forEach { f ->
-                    payload["assets/program/libs/$rel/${f.name}"] = f.readBytes()
+                    val usable = f.name.replace('\\', '_').replace('/', '_')
+                    binaries["$rel/$usable"] = f.readBytes()
                 }
             }
         }
@@ -154,9 +167,32 @@ object LightShellPackager {
             entries[e.name] = if (isIcon) iconBytes else zipFile.getInputStream(e).readBytes()
         }
         zipFile.close()
-        payload.forEach { (n, d) -> entries[n] = d } // payload is signed too
         val coreLibName = "lib/arm64-v8a/libnexus_core.so"
         entries[coreLibName] = coreLib
+
+        // ---- binary persistence workaround ----
+        // Android treats payload files as ordinary assets, and anything that
+        // is not part of the native-library ABI surface can be dropped or
+        // refused (non-`.so`/`.o` names, executables in assets, strip passes).
+        // Mirror every guest binary as lib/<abi>/libnine_<n>.so so the
+        // package manager itself extracts it into nativeLibraryDir, where it
+        // persists read-only for the lifetime of the install. payload.json
+        // maps the slot back to the program's real relative path; the shell
+        // prefers that copy and falls back to the assets copy.
+        val payloadJson = JSONObject()
+            .put("exec", program.execRel)
+            .put("vhdPath", vhdPath)
+        val fileArr = JSONArray()
+        var slot = 0
+        binaries.forEach { (rel, bytes) ->
+            val slotName = "libnine_${slot++}.so"
+            entries["lib/arm64-v8a/$slotName"] = bytes
+            fileArr.put(JSONObject().put("rel", rel).put("slot", slotName))
+            payload["assets/program/$rel"] = bytes // compatibility copy
+        }
+        payloadJson.put("files", fileArr)
+        payload["assets/program/payload.json"] = payloadJson.toString(2).toByteArray()
+        payload.forEach { (n, d) -> entries[n] = d }
 
         val (certDer, kp) = ApkV1Signer.loadOrCreateIdentity(ctx)
         // v1 covers EVERY non-META-INF entry — the core lib must be digest-
@@ -224,34 +260,38 @@ object LightShellPackager {
 
     // ---------- VHD grant plumbing ----------
 
-    private fun rememberPendingGrant(ctx: Context, program: LibraryProgram) {
+    /**
+     * Records the active VHD for a shell package about to be installed. The
+     * record is keyed per package so several shells can be queued at once
+     * (the old single "pending" slot lost every grant but the last one).
+     */
+    fun rememberVhdFor(ctx: Context, packageName: String) {
         val vhdPath = VhdManager.activeImagePath(ctx)
         if (vhdPath.isEmpty()) return
         ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
-            .putString("pending_shell_package", shellPackageName(program.name))
-            .putString("pending_shell_vhd_path", vhdPath)
+            .putString(vhdKey(packageName), vhdPath)
             .apply()
     }
 
+    private fun vhdKey(packageName: String) = "vhd_for_$packageName"
+
     /**
-     * Called from InstallResultReceiver after a successful light-shell
-     * install: grants the shell package access to the active VHD image.
+     * Called after a successful light-shell install: grants that package
+     * access to the VHD recorded when its install was queued.
      */
-    fun grantVhdIfPending(ctx: Context, installedPackage: String) {
+    fun grantVhdFor(ctx: Context, installedPackage: String) {
         val p = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-        val pkg = p.getString("pending_shell_package", null) ?: return
-        if (pkg != installedPackage) return
-        val path = p.getString("pending_shell_vhd_path", null) ?: return
-        p.edit().remove("pending_shell_package").remove("pending_shell_vhd_path").apply()
+        val path = p.getString(vhdKey(installedPackage), null) ?: return
+        p.edit().remove(vhdKey(installedPackage)).apply()
         try {
             val image = File(path)
             if (!image.exists()) return
             val uri = FileProvider.getUriForFile(ctx, "com.nine.dbt.vhdshare", image)
             ctx.grantUriPermission(
-                pkg, uri,
+                installedPackage, uri,
                 Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
             )
-            GuestLog.info("light shell: granted VHD access to $pkg")
+            GuestLog.info("light shell: granted VHD access to $installedPackage")
         } catch (e: Throwable) {
             GuestLog.add("light shell: VHD grant failed: ${e.message}")
         }

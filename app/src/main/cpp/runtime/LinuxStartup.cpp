@@ -34,7 +34,14 @@ LinuxStartupResult LinuxStartup::prepare(MemoryManager& mm, const LoadedElf& loa
     auto& log = Logger::instance();
 
     const size_t stack_size = 0x200000; // 2 MiB
-    uint64_t stack_base = mm.allocate(0, stack_size, PagePerm::READ_WRITE, "linux_stack");
+    // The initial program break sits immediately after the image's last
+    // PT_LOAD. Allocating the stack (or TLS) with allocate(0) would place it
+    // at that same address, so the first brk() would collide with the stack.
+    // Keep the Linux layout: stack and TLS live near the top of user space,
+    // the heap grows up from the image.
+    constexpr uint64_t kStackTop = 0x00007FFF00000000ULL;
+    uint64_t stack_base = mm.allocate(kStackTop - stack_size, stack_size,
+                                      PagePerm::READ_WRITE, "linux_stack");
     if (!stack_base) {
         r.error = "stack allocate failed";
         return r;
@@ -45,7 +52,8 @@ LinuxStartupResult LinuxStartup::prepare(MemoryManager& mm, const LoadedElf& loa
     uint64_t tls_tp = 0;
     if (loaded.tls.present && loaded.tls.template_memsz) {
         size_t tls_sz = static_cast<size_t>(loaded.tls.template_memsz + 0x100);
-        uint64_t tls_base = mm.allocate(0, tls_sz, PagePerm::READ_WRITE, "tls");
+        // Place TLS above the stack, clear of the heap and of the image.
+        uint64_t tls_base = mm.allocate(stack_top, tls_sz, PagePerm::READ_WRITE, "tls");
         if (tls_base) {
             void* host = mm.guestToHost(tls_base);
             if (host) {

@@ -184,22 +184,27 @@ int64_t SyscallTranslator::translate(int nr, uint64_t a1, uint64_t a2, uint64_t 
         }
         case SYS_BRK: {
             if (a1 == 0) return static_cast<int64_t>(brk_);
-            if (a1 > brk_ && mm_) {
-                // Extend guest heap mapping
+            const uint64_t new_brk = (a1 + 0xFFF) & ~0xFFFULL;
+            if (new_brk > brk_) {
+                // Extend the guest heap mapping. If the range cannot be mapped,
+                // report the old break to the guest (Linux returns the current
+                // break on failure); advancing without backing memory would make
+                // the next malloc write fault in an unrelated mapping.
                 uint64_t old = brk_;
-                size_t need = static_cast<size_t>(a1 - old);
-                if (need) {
+                size_t need = static_cast<size_t>(new_brk - old);
+                if (need && mm_) {
                     uint64_t g = mm_->allocate(old, need, PagePerm::READ_WRITE, "brk");
                     if (!g) {
-                        // best-effort: still advance pointer so glibc continues
-                        Logger::instance().warn(LogCategory::ABI, "brk allocate failed, advancing anyway");
+                        Logger::instance().infof(LogCategory::ABI,
+                                                 "brk 0x%llx-0x%llx failed, keeping old break",
+                                                 (unsigned long long)old,
+                                                 (unsigned long long)new_brk);
+                        return static_cast<int64_t>(brk_);
                     }
                 }
-                brk_ = a1;
-            } else if (a1 > brk_) {
-                brk_ = a1;
-            } else if (a1 != 0 && a1 < brk_) {
-                brk_ = a1; // allow shrink
+                brk_ = new_brk;
+            } else if (new_brk < brk_) {
+                brk_ = new_brk; // allow shrink
             }
             return static_cast<int64_t>(brk_);
         }

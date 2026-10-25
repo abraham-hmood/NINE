@@ -9,6 +9,7 @@
 #include "../memory/MemoryManager.h"
 #include "../translator/CodeCache.h"
 #include "../translator/Translator.h"
+#include "../aot/AotRelink.h"
 #include "../abi/SyscallTranslator.h"
 #include "../abi/Seh.h"
 #include "../abi/Ntdll.h"
@@ -477,6 +478,34 @@ std::string RuntimeBridge::runPe(const std::vector<uint8_t>& bytes, const std::s
         return runRawCode(bytes.data(), bytes.size(), 0x140000000ULL, cache_dir);
     }
     emitLog("PE entry=0x" + [&]{std::ostringstream o;o<<std::hex<<mapped->entry;return o.str();}());
+
+    // ---- Windows ABI: patch the IAT with real callable thunks -----------
+    Ntdll nt;
+    Kernel32 k32(nt, mm);
+    OtherDlls other(k32);
+    auto lowerName = [](std::string v) {
+        for (char& c : v) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        return v;
+    };
+    nt.ldrAdd("nine.exe", mapped->base, parsed->opt.size_of_image);
+    {
+        PeImports imp(mm);
+        auto ents = imp.walk(*mapped, bytes.data(), bytes.size());
+        auto delay = imp.walkDelay(*mapped, bytes.data(), bytes.size());
+        ents.insert(ents.end(), delay.begin(), delay.end());
+        size_t patched = imp.resolveAndPatch(
+            *mapped, ents,
+            [&](const std::string& dll) -> uint64_t { return k32.loadLibrary(dll); },
+            [&](const std::string& dll, const std::string& name) -> uint64_t {
+                const std::string dl = lowerName(dll);
+                if (dl == "ntdll.dll" || dl == "kernel32.dll" || dl == "kernelbase.dll")
+                    return k32.resolve(name);
+                return other.resolve(dl, name);
+            });
+        emitLog("PE IAT: " + std::to_string(patched) + "/" + std::to_string(ents.size()) +
+                " slots -> thunks; " + k32.abi().statsLine());
+    }
+
     // Reuse ELF-style loop via raw is wrong for mapped image; run from mapped entry
     CodeCache cache(1 << 20);
     Translator tr;
@@ -486,6 +515,9 @@ std::string RuntimeBridge::runPe(const std::vector<uint8_t>& bytes, const std::s
     sys.setMemoryManager(&mm);
     MemHelpers_setMM(&mm);
     ExecutionLoop loop(cache, tr, sys, seh, &mm, &smc);
+    loop.setAbiDispatcher([&](int64_t nr, GuestContext& ctx) {
+        return k32.abi().handleSyscallNumber(nr, ctx);
+    });
     loop.setTranslate(false);
     loop.setInlineSyscalls(true);
     GuestContext& ctx = ContextSwitch::current();
@@ -573,11 +605,38 @@ std::string guessOs(const std::string& path, const std::vector<uint8_t>* bytes) 
     return "linux";
 }
 
+// Filename-safe stem for an AOT sidecar: sonames contain '/' and version
+// dashes, which are fine on disk but ugly to smuggle into a payload list.
+inline std::string aotFileStem(const std::string& name) {
+    std::string out;
+    out.reserve(name.size());
+    for (char c : name) {
+        const bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                        (c >= '0' && c <= '9') || c == '.' || c == '-' || c == '_';
+        out.push_back(ok ? c : '_');
+    }
+    while (!out.empty() && out.front() == '.') out.erase(out.begin());
+    if (out.empty()) out = "module";
+    if (out.size() > 64) out.resize(64);
+    return out;
+}
+
 struct RelinkJson {
     bool ok = false;
     std::string os = "linux";
     std::string summary;
     std::string error;
+    // AOT translation outcome. `ok` means every executable segment of every
+    // module produced an image, i.e. the program needs no translator at run
+    // time. `unsupported` names the instructions that blocked it.
+    struct Aot {
+        bool ok = false;
+        uint32_t modules = 0;
+        uint64_t blocks = 0;
+        uint64_t bytes = 0;
+        std::string error;
+        std::vector<std::string> unsupported;
+    } aot;
     struct Lib {
         std::string name;       // DT_NEEDED soname or imported DLL name
         std::string provider;   // "bundled" | "nine-abi"
@@ -610,7 +669,19 @@ struct RelinkJson {
             if (i) out += ",";
             out += "\"" + jsonEscape(unresolved[i]) + "\"";
         }
-        out += "]}";
+        out += "]";
+        out += ",\"aot\":{\"ok\":";
+        out += aot.ok ? "true" : "false";
+        out += ",\"modules\":" + std::to_string(aot.modules);
+        out += ",\"blocks\":" + std::to_string(aot.blocks);
+        out += ",\"bytes\":" + std::to_string(aot.bytes);
+        out += ",\"error\":\"" + jsonEscape(aot.error) + "\"";
+        out += ",\"unsupported\":[";
+        for (size_t i = 0; i < aot.unsupported.size(); ++i) {
+            if (i) out += ",";
+            out += "\"" + jsonEscape(aot.unsupported[i]) + "\"";
+        }
+        out += "]}}";
         return out;
     }
 };
@@ -621,6 +692,35 @@ std::string relinkSummaryLine(size_t bundled, size_t nine_abi) {
     o << total << (total == 1 ? " library resolved (" : " libraries resolved (")
      << bundled << " bundled, " << nine_abi << " nine-abi)";
     return o.str();
+}
+
+void summarizeAot(RelinkJson& j, const std::vector<aot::ModuleTranslation>& reports) {
+    j.aot.ok = !reports.empty();
+    for (const auto& r : reports) {
+        if (r.ok) {
+            ++j.aot.modules;
+            j.aot.blocks += r.blocks;
+            j.aot.bytes += r.image_bytes;
+        } else {
+            j.aot.ok = false;
+            if (j.aot.error.empty()) j.aot.error = r.name + ": " + r.error;
+            for (const auto& u : r.unsupported) {
+                if (std::find(j.aot.unsupported.begin(), j.aot.unsupported.end(), u) ==
+                    j.aot.unsupported.end())
+                    j.aot.unsupported.push_back(u);
+            }
+        }
+    }
+    if (j.aot.unsupported.size() > 32) j.aot.unsupported.resize(32);
+}
+
+std::string withAotLine(const std::string& base, const RelinkJson& j) {
+    if (j.aot.ok) {
+        return base + " · AOT ready (" + std::to_string(j.aot.modules) + " image" +
+               (j.aot.modules == 1 ? "" : "s") + ", " +
+               std::to_string(j.aot.blocks) + " blocks)";
+    }
+    return base + " · AOT: not translated";
 }
 } // namespace
 
@@ -690,6 +790,7 @@ std::string RuntimeBridge::relinkElf(const std::string& path, const std::vector<
     ModuleGraph graph;
     SymbolResolver resolver(graph);
     std::vector<std::unique_ptr<LoadedElf>> keep_alive;
+    std::vector<std::string> module_names;
     std::unordered_set<std::string> seen;
     size_t bundled = 0, sys_abi = 0, parse_fail = 0;
 
@@ -703,6 +804,7 @@ std::string RuntimeBridge::relinkElf(const std::string& path, const std::vector<
     keep_alive.push_back(std::make_unique<LoadedElf>(std::move(*main_loaded)));
     const std::string main_name = parsed->soname.value_or(fileNameOfPath(path));
     graph.add(Module::fromLoadedElf(*keep_alive.back(), main_name));
+    module_names.push_back(main_name);
 
     // Breadth-first DT_NEEDED closure
     std::vector<std::string> queue(parsed->needed.begin(), parsed->needed.end());
@@ -735,6 +837,7 @@ std::string RuntimeBridge::relinkElf(const std::string& path, const std::vector<
         keep_alive.push_back(std::make_unique<LoadedElf>(std::move(*le)));
         const std::string mod_name = lp->soname.value_or(fileNameOfPath(*found));
         graph.add(Module::fromLoadedElf(*keep_alive.back(), mod_name));
+        module_names.push_back(mod_name);
         ++bundled;
         emitLog("relink[ELF]: " + soname + " -> bundled " + *found);
         j.libraries.push_back({soname, "bundled", *found, install});
@@ -755,6 +858,25 @@ std::string RuntimeBridge::relinkElf(const std::string& path, const std::vector<
             });
     }
 
+    // ---- relinker-side translation -------------------------------------
+    // Every executable segment is compiled to AArch64 now, while the image is
+    // mapped and relocated. The images are written beside the program so a
+    // light shell can run it without the dynamic binary translator.
+    std::vector<aot::ModuleTranslation> aot_reports;
+    {
+        std::string aot_dir = dirOfPath(path);
+        if (aot_dir.empty()) aot_dir = ".";
+        for (size_t i = 0; i < keep_alive.size(); ++i) {
+            const std::string stem = aotFileStem(i < module_names.size() ? module_names[i]
+                                                                        : main_name);
+            auto rep = aot::translate(mm, aot::execRanges(*keep_alive[i]),
+                                      keep_alive[i]->entry, stem, aot_dir);
+            emitLog("relink[ELF]: " + rep.summary());
+            aot_reports.push_back(std::move(rep));
+        }
+        summarizeAot(j, aot_reports);
+    }
+
     std::ostringstream oss;
     oss << "relink[ELF] done: bundled=" << bundled
         << " sys-abi=" << sys_abi
@@ -773,7 +895,7 @@ std::string RuntimeBridge::relinkElf(const std::string& path, const std::vector<
     }
     emitLog(oss.str());
 
-    j.summary = relinkSummaryLine(bundled, sys_abi);
+    j.summary = withAotLine(relinkSummaryLine(bundled, sys_abi), j);
     j.unresolved.assign(unresolved.begin(), unresolved.end());
     std::sort(j.unresolved.begin(), j.unresolved.end());
 
@@ -845,19 +967,37 @@ std::string RuntimeBridge::relinkPe(const std::string& path, const std::vector<u
         },
         [&](const std::string& dll, const std::string& name) -> uint64_t {
             std::string dl = lowerStr(dll);
+            // A stubbed export is callable but still unimplemented, so it is
+            // reported as unresolved even though the IAT gets a real address.
+            const bool known = k32.abi().has(dl, name) ||
+                               k32.abi().has(dl == "kernelbase.dll" ? "kernel32.dll" : dl, name);
             uint64_t a = 0;
             if (dl == "ntdll.dll" || dl == "kernel32.dll" || dl == "kernelbase.dll")
                 a = k32.resolve(name);
             if (!a) a = other.resolve(dl, name);
-            if (a) {
+            if (a && known) {
                 ++resolved;
             } else {
                 ++unresolved;
-                emitLog("relink[PE]: unresolved " + dll + "!" + name);
+                emitLog(std::string("relink[PE]: ") + (a ? "stubbed " : "unresolved ") +
+                        dll + "!" + name);
                 j.unresolved.push_back(dl + "!" + name);
             }
             return a;
         });
+
+    // ---- relinker-side translation -------------------------------------
+    {
+        std::string aot_dir = dirOfPath(path);
+        if (aot_dir.empty()) aot_dir = ".";
+        std::vector<aot::ModuleTranslation> reports;
+        auto rep = aot::translate(mm, aot::execRanges(*parsed),
+                                  mapped->base + parsed->opt.address_of_entry,
+                                  aotFileStem(fileNameOfPath(path)), aot_dir);
+        emitLog("relink[PE]: " + rep.summary());
+        reports.push_back(std::move(rep));
+        summarizeAot(j, reports);
+    }
 
     std::ostringstream oss;
     oss << "relink[PE] done: patched=" << patched << "/" << ents.size()
@@ -866,7 +1006,7 @@ std::string RuntimeBridge::relinkPe(const std::string& path, const std::vector<u
         << " unresolved=" << unresolved;
     emitLog(oss.str());
 
-    j.summary = relinkSummaryLine(0, dlls.size());
+    j.summary = withAotLine(relinkSummaryLine(0, dlls.size()), j);
     std::sort(j.unresolved.begin(), j.unresolved.end());
     j.unresolved.erase(std::unique(j.unresolved.begin(), j.unresolved.end()),
                        j.unresolved.end());

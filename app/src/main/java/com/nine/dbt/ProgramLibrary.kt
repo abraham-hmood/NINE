@@ -618,3 +618,55 @@ object ProgramLibrary {
         return ICON_COLORS[Math.floorMod(h, ICON_COLORS.size)]
     }
 }
+
+/**
+ * Programs NINE ships with.
+ *
+ * `assets/programs/hello-x86_64` is a freestanding C program built from
+ * `samples/hello-x86_64/hello.c` (see its build.sh): no libc, no dynamic
+ * loader, only mov/xor/lea/syscall. It prints through the Linux write
+ * syscall and exits through exit(2), so it doubles as a fast smoke test for
+ * the loader, interpreter and syscall path without needing a 700 KB glibc
+ * binary.
+ *
+ * Installed once, on first launch, then treated like any imported program.
+ */
+object BuiltinPrograms {
+    const val HELLO_ID = "nine-hello-x86_64"
+    private const val PREFS = "nine_builtins"
+    private const val KEY_HELLO = "hello_x86_64_installed_v1"
+
+    fun ensureInstalled(ctx: Context) {
+        val prefs = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        if (prefs.getBoolean(KEY_HELLO, false)) return
+        runCatching {
+            val dir = ProgramLibrary.programDir(ctx, HELLO_ID)
+            dir.mkdirs()
+            val exec = File(dir, "hello")
+            ctx.assets.open("programs/hello-x86_64").use { input ->
+                exec.outputStream().use { output -> input.copyTo(output) }
+            }
+            exec.setExecutable(true, false)
+            if (ProgramLibrary.all(ctx).none { it.id == HELLO_ID }) {
+                ProgramLibrary.add(
+                    ctx,
+                    LibraryProgram(
+                        id = HELLO_ID,
+                        name = "Hello (C, x86-64)",
+                        developer = "NINE",
+                        os = "linux",
+                        kind = "elf",
+                        execRel = "hello",
+                        libDirs = emptyList(),
+                        status = "Ready",
+                        addedAt = System.currentTimeMillis(),
+                        iconColor = 0xFF00E5FF
+                    )
+                )
+            }
+            prefs.edit().putBoolean(KEY_HELLO, true).apply()
+        }.onFailure {
+            GuestLog.add("builtin hello install failed: ${it.message}")
+        }
+    }
+}

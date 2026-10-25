@@ -49,6 +49,24 @@ public:
     void movz(int rd, uint16_t imm, int hw = 0, bool sf64 = true);
     void movk(int rd, uint16_t imm, int hw, bool sf64 = true);
     void mov_imm64(int rd, uint64_t imm);
+    void mov_imm32(int rd, uint32_t imm);          // 32-bit form (zero-extends)
+
+    // Branches (offsets are in instructions, relative to this insn)
+    void b(int off_insns);
+    void b_cond(int cond, int off_insns);
+    void cbz(int rt, int off_insns);
+    void cbnz(int rt, int off_insns);
+
+    // Bit/half/byte reversal, bit test, and 64-bit "not"
+    void rev_x(int rd, int rn);
+    void rev_w(int rd, int rn);
+    void rev16_w(int rd, int rn);
+    void rev32_x(int rd, int rn);
+    void tst_reg(int rn, int rm);
+    void mvn_reg(int rd, int rm, bool sf64 = true);
+
+    // Patch a previously emitted instruction (branch fixups).
+    uint32_t& at(size_t index) { return code_[index]; }
 
     // Compare / conditional
     void cmp_reg(int rn, int rm, bool sf64 = true);

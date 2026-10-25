@@ -61,6 +61,11 @@ object FeatureCatalog {
         Feature("5.5", "Control flow", "Phase 3", ImplStatus.PARTIAL),
         Feature("5.6", "Code cache", "Phase 3", ImplStatus.FULL),
         Feature("5.7", "SIMD & atomics", "Phase 3", ImplStatus.PARTIAL),
+        Feature("5.8", "ISA additions: ADX / BCD adjust / SSE FP adds / AES-NI / Key Locker", "Phase 3", ImplStatus.FULL),
+        Feature("5.9", "ISA §2.18: packed integer / SSE4.2 string compare / system group", "Phase 3", ImplStatus.FULL),
+        Feature("5.10", "ISA §2.20: TSC / SHA / XSAVE / SHLD / REP / ring-0 refusals", "Phase 3", ImplStatus.FULL),
+        Feature("5.11", "ISA §2.21: AVX / AVX2 / AVX-512 (VEX+EVEX, ymm/zmm, masks)", "Phase 3", ImplStatus.FULL),
+        Feature("5.12", "ISA §2.22: SGX ENCLS / ENCLU / ENCLV leaf model", "Phase 3", ImplStatus.FULL),
         Feature("ec.3", "Exit: DBT executes arithmetic + branches", "Phase 3", ImplStatus.PARTIAL, true),
 
         // ---- Phase 4 PE ----

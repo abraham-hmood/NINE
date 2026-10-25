@@ -1,60 +1,79 @@
 package com.nine.shell
 
 import android.app.Activity
-import android.graphics.Color
 import android.graphics.Typeface
 import android.os.Bundle
-import android.view.Gravity
-import android.widget.Button
+import android.view.ViewGroup
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import java.io.File
 
 /**
- * Light-shell log viewer — shows the exact same stream as NINE's Logs tab:
- * every GuestLog line the shell's own com.nine.dbt.GuestLog recorded while
- * running the program (which also lands in logcat under the NINE tag).
+ * Light-shell log viewer — the exact stream NINE's Logs tab shows: every
+ * GuestLog line this shell recorded while running the program (which also
+ * lands in logcat under the NINE tag), presented in NINE's monospace panel.
  */
 class ShellLogsActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        window.statusBarColor = ShellTheme.BG
+        window.navigationBarColor = ShellTheme.BG
 
+        val px = { dp: Int -> ShellTheme.px(this, dp) }
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(24, 24, 24, 24)
-            setBackgroundColor(Color.BLACK)
+            setPadding(px(20), px(24), px(20), px(24))
+            setBackgroundColor(ShellTheme.BG)
         }
 
-        val title = TextView(this).apply {
-            text = "PROGRAM LOGS"
-            setTextColor(Color.CYAN)
-            textSize = 20f
-        }
-        root.addView(title)
+        root.addView(ShellTheme.header(this, "SESSION LOG", "NINE · LIGHT SHELL"))
+        root.addView(android.view.View(this).apply {
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, px(18)
+            )
+        })
 
+        val card = ShellTheme.card(this)
         var logText: TextView? = null
-
         val text = TextView(this).apply {
             typeface = Typeface.MONOSPACE
-            setTextColor(Color.rgb(0, 229, 255))
-            textSize = 12f
+            setTextColor(ShellTheme.CYAN_SOFT)
+            textSize = 11f
             text = readLogText()
             logText = this
         }
-        val scroll = ScrollView(this).apply { addView(text) }
-        root.addView(scroll, LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f).apply { topMargin = 24 })
+        val scroll = ScrollView(this).apply {
+            addView(text, ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+            ))
+        }
+        card.addView(scroll, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f
+        ))
+        root.addView(card, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f
+        ))
 
-        root.addView(Button(this).apply {
-            setText("REFRESH")
-            setOnClickListener { logText?.text = readLogText() }
+        root.addView(android.view.View(this).apply {
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, px(14)
+            )
         })
-        root.addView(Button(this).apply {
-            setText("BACK")
-            setOnClickListener { finish() }
+
+        val actions = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+        }
+        actions.addView(ShellTheme.secondaryButton(this, "REFRESH") {
+            logText?.text = readLogText()
+        }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        actions.addView(android.view.View(this).apply {
+            layoutParams = LinearLayout.LayoutParams(px(10), ViewGroup.LayoutParams.MATCH_PARENT)
         })
+        actions.addView(ShellTheme.primaryButton(this, "BACK") { finish() },
+            LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        root.addView(actions)
 
         setContentView(root)
     }

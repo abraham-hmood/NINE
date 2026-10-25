@@ -43,6 +43,8 @@ const uint8_t* ExecutionLoop::resolveGuestBytes(uint64_t pc, size_t& out_len,
 
 void ExecutionLoop::ensureTranslated(uint64_t pc, const uint8_t* bytes, size_t avail) {
     if (!do_translate_ || !bytes || !avail) return;
+    // Already known to need the interpreter: do not re-emit it every visit.
+    if (untranslatable_.count(pc)) return;
     uint64_t h = hashRange(bytes, std::min<size_t>(64, avail));
     if (cache_.isStale(pc, h)) {
         cache_.invalidate(pc);
@@ -54,6 +56,13 @@ void ExecutionLoop::ensureTranslated(uint64_t pc, const uint8_t* bytes, size_t a
     }
     counters_.cache_misses.fetch_add(1, std::memory_order_relaxed);
     auto tu = tr_.translateBlock(bytes, avail, pc);
+    if (tu.unsupported) {
+        // The emitter only produced a nop for at least one instruction in this
+        // block; installing it would drop guest state updates, so fall through
+        // to the interpreter path instead.
+        if (untranslatable_.size() < kMaxUntranslatable) untranslatable_.insert(pc);
+        return;
+    }
     if (!tu.arm64.empty()) {
         if (cache_.install(pc, tu.guest_end, tu.arm64.data(), tu.arm64.size(), h)) {
             counters_.translations.fetch_add(1, std::memory_order_relaxed);
@@ -64,6 +73,9 @@ void ExecutionLoop::ensureTranslated(uint64_t pc, const uint8_t* bytes, size_t a
 
 int64_t ExecutionLoop::handleSyscall(GuestContext& ctx, int64_t nr) {
     counters_.syscalls.fetch_add(1, std::memory_order_relaxed);
+    // A Windows ABI thunk traps with a number in WinAbi's reserved range. The
+    // dispatcher writes the return value into ctx itself.
+    if (abi_ && abi_(nr, ctx)) return static_cast<int64_t>(ctx.rax());
     if (on_syscall_) return on_syscall_(nr, ctx);
     return sys_.translate(static_cast<int>(nr),
                           ctx.rdi(), ctx.rsi(), ctx.rdx(),
@@ -144,6 +156,17 @@ ExecResult ExecutionLoop::resume(GuestContext& ctx, const uint8_t* guest_code, s
                     int64_t nr = static_cast<int64_t>(ctx.rax());
                     int64_t ret = handleSyscall(ctx, nr);
                     ctx.rax() = static_cast<uint64_t>(ret);
+                    // exit/exit_group never return. Hand the stop to the
+                    // caller instead of resuming at the bytes after syscall
+                    // (which are usually unmapped or padding, and would be
+                    // reported as a spurious guest exception).
+                    if (nr == 60 || nr == 231) {
+                        last.reason = ExitReason::SYSCALL;
+                        last.syscall_nr = nr;
+                        last.syscall_ret = ret;
+                        last.guest_pc = ctx.rip;
+                        return last;
+                    }
                     // RIP already advanced by the translated block past SYSCALL
                     if (inline_syscalls_) {
                         last.reason = ExitReason::NONE;
@@ -219,6 +242,13 @@ ExecResult ExecutionLoop::resume(GuestContext& ctx, const uint8_t* guest_code, s
                 int64_t ret = handleSyscall(ctx, nr);
                 ctx.rax() = static_cast<uint64_t>(ret);
                 ctx.rip = ir.next_pc;
+                if (nr == 60 || nr == 231) {
+                    last.reason = ExitReason::SYSCALL;
+                    last.syscall_nr = nr;
+                    last.syscall_ret = ret;
+                    last.guest_pc = ctx.rip;
+                    return last;
+                }
                 if (inline_syscalls_) {
                     last.reason = ExitReason::NONE;
                     last.guest_pc = ctx.rip;

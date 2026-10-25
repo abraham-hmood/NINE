@@ -1,12 +1,15 @@
 #pragma once
 
 #include <cstdint>
+#include <map>
 #include <string>
 #include <vector>
 #include <mutex>
 #include <unordered_map>
 
 namespace nexus {
+
+class MemoryManager;
 
 // Minimal PEB / TEB for a user-mode Windows guest.
 struct UnicodeString { uint16_t length; uint16_t max; uint64_t buffer; };
@@ -43,6 +46,10 @@ public:
     Peb& peb() { return peb_; }
     Teb& teb() { return teb_; }
 
+    // When set, the Rtl heap allocates real guest memory instead of bumping a
+    // counter over addresses that were never mapped.
+    void setMemoryManager(MemoryManager* mm) { mm_ = mm; }
+
     // Heap
     uint64_t rtlAllocateHeap(uint64_t heap, uint32_t flags, size_t size);
     bool rtlFreeHeap(uint64_t heap, uint32_t flags, uint64_t ptr);
@@ -58,9 +65,14 @@ public:
     void rtlAcquireSRWLockExclusive(uint64_t lock);
     void rtlReleaseSRWLockExclusive(uint64_t lock);
 
+    // Copies the PEB/TEB image into guest memory at the FS/GS-relative offsets
+    // the Windows ABI expects. Called by the loader once the image is mapped.
+    void publishTeb(uint64_t fs_base);
+
 private:
     Peb peb_;
     Teb teb_;
+    MemoryManager* mm_ = nullptr;
     std::vector<LdrEntry> ldr_;
     std::mutex heap_mu_;
     uint64_t heap_next_ = 0x20000000;

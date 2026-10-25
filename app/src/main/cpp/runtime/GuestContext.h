@@ -3,6 +3,8 @@
 #include <cstdint>
 #include <cstring>
 
+#include "X87.h"
+
 namespace nexus {
 
 enum class BlockExitReason : uint32_t {
@@ -25,7 +27,28 @@ struct GuestContext {
     uint64_t cr2 = 0;
     uint64_t cr3 = 0;
     uint64_t cr4 = 0x00000668;
-    alignas(32) uint8_t ymm[16][32] = {};
+    // SSE control/status. LDMXCSR/STMXCSR and FXSAVE/FXRSTOR round-trip it;
+    // its rounding-control and FTZ bits are not yet applied to SSE math.
+    uint32_t mxcsr = 0x1F80;
+    // Full AVX-512 vector file: 32 registers, 64 bytes each. XMMn is bytes
+    // 0-15, YMMn bytes 0-31, ZMMn bytes 0-63 of the same slot, so a legacy
+    // SSE write leaves the upper bytes untouched and VEX/EVEX zero-extends
+    // them exactly where the ISA says it should.
+    alignas(64) uint8_t ymm[32][64] = {};
+
+    // x87 register stack + control/status/tag words (see X87.h). Lives here so
+    // it travels with the guest context through thread switches and saves.
+    x87::State fpu;
+
+    // AVX-512 opmask file k0-k7 (64 bits each; k0 is the implicit "no mask"
+    // register for every EVEX data instruction and is never named by aaa=0).
+    uint64_t kmask[8] = {};
+
+    // MPX bound registers BND0-BND3. [i][0] = LB, [i][1] = UB stored in the
+    // architecturally visible 1's-complement form (BNDMK writes ~EA, and
+    // BNDCU compares against ~UB). Bound tables are not modelled — see
+    // BNDLDX/BNDSTX in InsnInterpreter.cpp.
+    uint64_t bnd[4][2] = {};
 
     // J1.2 exit channel — written by translated blocks before RET
     BlockExitReason exit_reason = BlockExitReason::CONTINUE;
@@ -58,6 +81,8 @@ struct GuestContext {
         rflags = 0x202;
         cr0 = 0x80050033;
         cr4 = 0x00000668;
+        mxcsr = 0x1F80;
+        fpu = x87::State{};
         exit_reason = BlockExitReason::CONTINUE;
     }
 
