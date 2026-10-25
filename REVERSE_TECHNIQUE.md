@@ -33,10 +33,13 @@ Demand-driven binary surface discovery: inventory what a guest executable **actu
 4. **Implement in priority order**
    - **P0**: process image (stack argc/argv/envp/auxv), TLS, syscalls that exit path needs (`write`, `exit_group`, `brk`, `mmap` family, `arch_prctl`, …)
    - **P1**: signals, futex, openat/close — as logs demand
-   - **ISA gaps**: next `unimplemented: <mnemonic>` from the interpreter/JIT log
+   - **ISA gaps**: next `unimplemented: <mnemonic>` from the interpreter/JIT log,
+     or the `aot.unsupported` list from a Relink report
 
 5. **Run → log → next gap**
    - Illegal opcode → extend decoder/interpreter/emitter
+   - Relink says `AOT: not translated` → add the named opcode to `aot/AotCompiler.cpp`
+     (the interpreter is the semantic reference for the new emitter case)
    - Missing syscall → extend `SyscallTranslator` / Windows ABI
    - Crash on null auxv/TLS → fix startup, not random libc functions
 
@@ -85,30 +88,37 @@ This is the **AnyPS5-style** approach: the binary teaches you the API surface; N
 
 ## Coverage ledger maintenance (AI contract)
 
-Every color-coded coverage doc is part of the loop, not just documentation. When
-you implement a new guest-visible surface � a Linux syscall, a Windows API, an
-x86-64 instruction family, a PE component � you **must, in the same commit**:
+Every colour-coded coverage doc is part of the loop, not just documentation. When
+you implement a new guest-visible surface — a Linux syscall, a Windows API, an
+x86-64 instruction family, an AOT emitter opcode, a PE component — you **must, in
+the same commit**:
 
-1. Flip the affected cell(s) to ?? (implemented) / ?? (partial/stub) / ?
-   (removed ? back to unimplemented) in:
-   - **README.md � Coverage grids** (Windows ABI grid, Linux API grid, ISA grid)
+1. Flip the affected cell(s) to 🟩 (implemented) / 🟨 (partial/stub) / ⬛ (moved
+   back to unimplemented) in:
+   - **README.md › Coverage grids** (Windows ABI grid, Linux API grid, ISA grid,
+     and the translation-engine table)
    - **LIBRARIES.md** (per-API named checklists for Windows DLLs and Linux APIs)
-   - **ARCHITECTURE.md** (per-instruction family ledger �2; add the new mnemonic
-     rows properly marked, not as a footnote)
-   - `app/src/main/cpp/SUPPORTED.md` where the item matches its original table
-2. Update the "Count Snapshot" block at the bottom of LIBRARIES.md when the
-   implemented-area *counts* change (e.g. kernel32 exports with real behavior,
-   syscall numbers with full behavior).
-3. Leave the cells that are still ? untouched � the grid is the backlog; the
-   next model reading this file must be able to rediscover the not-yet-implemented
+   - **ARCHITECTURE.md** (per-instruction family ledger §2 — add the new mnemonic
+     rows properly marked, not as a footnote; §1.3 for the AOT emitter)
+   - `app/src/main/cpp/SUPPORTED.md` where the item matches its tables (syscalls,
+     relocations, PE directories, AOT opcode surface)
+2. Update the "Count snapshot" block at the bottom of LIBRARIES.md when the
+   implemented-area *counts* change (kernel32 exports with real behaviour,
+   syscall numbers with full behaviour, AOT opcodes emitted).
+3. Leave the cells that are still ⬛ untouched — the grid is the backlog; the next
+   model reading this file must be able to rediscover the not-yet-implemented
    surface directly from README's dark cells.
 
-If a fix changed *decode behavior only* (e.g. a length fix, SIB fix, prefix
-fix) with no new instruction, note it in ARCHITECTURE.md �2.12
-("known decode quality fixes") instead of flipping cells.
+If a fix changed *decode behaviour only* (a length fix, SIB fix, prefix fix, the
+missing `B0–B7` `mov r8,imm8` form, the AH/CH/DH/BH rule) with no new instruction,
+note it in ARCHITECTURE.md §2.12 ("known decode quality fixes") instead of
+flipping cells.
 
-Rule of thumb: **fix the binary first, then the ledgers**; never flip a cell
-from spec reading alone � it is green only after the on-device run proves the
-binary executes past that point (REVERSE_TECHNIQUE.md loop discipline).
+If a fix changed *AOT emitted code only*, update the opcode list in
+ARCHITECTURE.md §1.3 and `SUPPORTED.md` §4, and run the case on device both with
+and without the fix: the ledger only goes green when the generated AArch64 has
+actually executed and the failure mode without the fix is known.
 
-
+Rule of thumb: **fix the binary first, then the ledgers**; never flip a cell from
+spec reading alone — it is green only after the on-device run proves the binary
+executes past that point (the loop discipline above).

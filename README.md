@@ -40,16 +40,17 @@ lives in this repository under `app/src/main/cpp/`.
 | ELF relocations | 🟢 | Common `R_X86_64_*` set incl. RELATIVE, IRELATIVE, GLOB_DAT, JUMP_SLOT, TLS basics |
 | Dynamic linker | 🟢 | Module graph, topological resolution, GOT/PLT/IAT, `$ORIGIN`, RUNPATH/RPATH, caching |
 | PE loader (PE32+) | 🟢 | Parse, map, base relocations, imports (incl. delay-load), exports, TLS, `.pdata` |
-| x86-64 decoder | 🟡 | ALU, shifts/rotates, MOV family, LEA, PUSH/POP, branches, CALL/RET, SETCC, CMOV*, string ops, SYSCALL; VEX/EVEX detected-but-not-decoded |
-| AArch64 emitter / JIT | 🟡 | Working ARM64 codegen for the decoded integer subset; lazy flags; SSE only sampled; LOCK/atomics designed (`SimdAtomics`) but not wired into the JIT |
+| x86-64 decoder | 🟡 | Integer ALU/shifts/rotates/MOV family/LEA/PUSH-POP/branches/CALL-RET/SETCC/CMOV/string/atomics, x87 (`D8–DF`), SSE/SSE2/SSE3/SSSE3/SSE4.1/SSE4.2, AES/Key Locker/GFNI/SHA, VEX AVX/AVX2 and EVEX AVX-512 (453 encoding rows), BMI1/BMI2/TBM, CET/MPX/SGX/RTM, plus exact decode-then-fault for privileged forms. Remaining gaps are named per row in `ARCHITECTURE.md` §2 |
+| AArch64 emitter / JIT | 🟡 | Working ARM64 codegen for the decoded integer subset; lazy flags; SIMD surfaces executed by `VecExec` rather than emitted; LOCK/atomics designed (`SimdAtomics`) but not wired into the JIT |
 | Interpreter fallback | 🟡 | Broad, semantically careful integer/branch/string execution with real flag semantics — **this is what runs binaries today** |
 | Execution loop | 🟢 | JIT-first with interpreter fallback, FNV hash staleness checks, syscall/import/exception exits, resumable |
 | Host trampoline | 🟢 | Translated blocks invoke as `void(*)(GuestContext*)` with pinned X0/X19/X20 ABI (`CtxLayout.h`) |
 | Code cache | 🟢 | W^X `seal`/`unseal`, concurrency-safe install + icache flush, **persistent save/load** ("NINE" v2 format keyed by image hash + translator version) |
+| AOT emitter (`aot/`) | 🟡 | Relinker-side ahead-of-time compiler: decodes each executable range of a mapped/relocated ELF or PE, emits one AArch64 function per basic block into a self-contained `.nine.aot` image (header + blocks + helper relocations + code, FNV-1a checked), and `AotEngine`/`AotModule` load, patch and dispatch it with no decoder, code cache or SMC tracking. All-or-nothing per module: an unsupported instruction means no image and the mnemonics are reported by name. Integer/flag/branch/memory subset only (list in ARCHITECTURE.md §1.3) — SSE/AVX, `IMUL`, `DIV`, string ops and x87 are still refused. Images are produced and load-tested today; the run path does not yet prefer them over the translator |
 | SMC coherency | 🟢 | Exec-page tracking; stores into executable pages invalidate overlapping translations |
 | Self-mod code + counters | 🟢 | Invalidation, hit/trace/IC counters exposed to UI |
-| Linux syscall ABI | 🟡 | ~50 numbers: read/write/open*/close/mmap/mprotect/munmap/brk, exit*, pid/uid family, fstat family, getrandom, stat/lstat/fstat/newfstatat, getdents64, poll, writev/readv, uname (spoofs x86_64), `arch_prctl` FS/GS into guest ctx; futex/signals bookkeeping stubs; fork/execve → `-ENOSYS` |
-| Windows ABI | 🟡 | every export is a real callable thunk (`WinAbi`): 16-byte guest stub → reserved syscall → Microsoft x64 marshaller → native handler. ~140 handlers across kernel32/kernelbase/ntdll (files, memory, heap, threads, events/waits, TLS, critical sections/SRW, time, environment, ANSI/UTF-16, error codes); user32/gdi32/advapi32 callable; unknown names of a shim module become logged no-ops instead of jumping into unmapped memory |
+| Linux syscall ABI | 🟡 | 62 numbers with a `case` arm (documented per number in `SUPPORTED.md` §1): read/write/open*/close/mmap/mprotect/munmap/brk, exit*, pid/uid family, fstat family, getrandom, stat/lstat/fstat/newfstatat, getdents64, poll, writev/readv, uname (spoofs x86_64), `arch_prctl` FS/GS into guest ctx; futex/signals bookkeeping stubs; fork/execve → `-ENOSYS` |
+| Windows ABI | 🟡 | every export is a real callable thunk (`WinAbi`): 16-byte guest stub → reserved syscall → Microsoft x64 marshaller → native handler. 105 kernel32 export names (each also registered on kernelbase) plus ntdll and 55 user32/gdi32/advapi32 exports — files, memory, heap, threads, events/waits, TLS, critical sections/SRW, time, environment, ANSI/UTF-16, error codes; user32/gdi32/advapi32 callable; unknown names of a shim module become logged no-ops instead of jumping into unmapped memory |
 | Threading | 🟡 | 1:1 guest↔host threads (`clone` CLONE_VM/FS/FILES/SIGHAND/THREAD, `CreateThread`), shared CodeCache, `thread_local` GuestContext, GuestTls FS base |
 | Diagnostics | 🟢 | Ring-buffer logger (8 categories) → logcat → app log sink, guest register/memory dumps |
 | llama.cpp runtime | 🟢 | Static llama.cpp v0.7.0 fetched at configure time; `.gguf` load → greedy generate → free, JNI-exposed |
@@ -63,7 +64,7 @@ Statuses align with the audits in `DevelopmentPlan.md` and `JITImplementationPla
 - **Home**: live RUNTIME card polling `GuestRuntime.status()` (Pause/Resume/Stop, counters), recent programs list.
 - **Library**: permanent program store. Import ELF / PE / ZIP program bundles via SAF, magic sniffing (ELF class, PE DLL bit, `config.json` bundles), per-program normalized metadata, Relink → writes a package-export zip containing the app's own `libnexus_core.so` + programs + libraries laid out at guest install paths.
 - **Logs**: streams native `Logger` output through the static JNI sink `GuestLog.onNativeLine`; captures guest `write(1/2, …)` as `stdout:` lines; save to txt via SAF.
-- **Debugger**: pause / resume / single-step (forced-interpreter), PC breakpoints, guest status snapshot; plus a feature matrix screen listing ~45 roadmap features (Phase 0–8, J1–J5, GUI/D3D/32-bit) with a native test runner (`NativeTests.run(id)`).
+- **Debugger**: pause / resume / single-step (forced-interpreter), PC breakpoints, guest status snapshot; plus a feature matrix screen listing 83 roadmap rows (Phase 0–8, J1–J5, GUI/D3D/32-bit, app/AI surfaces) with a native test runner (`NativeTests.run(id)`).
 - **AI stack**:
   - Cloud chat against any OpenAI-compatible endpoint (configurable URL/key/model list), with tool calling.
   - Local models: `.gguf` via llama.cpp in `libnexus_core` (greedy decode); `.tflite` path exists but with a byte-level test tokenizer.
@@ -199,7 +200,7 @@ Every DLL a Windows app can link against, grouped by purpose. 🟩 = NINE implem
 | Process | 🟩 exit/exit_group/getpid/getppid/gettid/getuid/geteuid/getgid/getegid/clone/set_tid_address/tgkill/sysinfo | 🟨 futex WAIT/WAKE only; fork/vfork/execve→ENOSYS | ⬛ wait4/kill, ptrace, namespaces, cgroups |
 | Sched / time | 🟩 nanosleep, sched_yield, sched group (144-147), sched_getaffinity, clock_gettime, gettimeofday | | ⬛ timer_create, itimers, epoll_wait (busy apps) |
 | Signals | 🟨 rt_sigaction/rt_sigprocmask bookkeeping stubs | | ⬛ real delivery, sigaltstack, rt_sigtimedwait |
-| Sockets | enum'd only | 🟨 sendto/recvfrom paths routed through SocketABI | ⬛ socket/connect/bind/listen/accept, socketpair, recvmsg/sendmsg |
+| Sockets | — | — | ⬛ socket/connect/bind/listen/accept, sendto/recvfrom, socketpair, recvmsg/sendmsg (numbers are enumerated, every one returns `-ENOSYS`) |
 | Misc | 🟩 uname (x86_64 spoof), getrandom, prctl (partial), rseq→ENOSYS graceful | 🟨 sysinfo struct fill | ⬛ bpf, perf_event, io_uring |
 
 #### Linux system library inventory (all programs link these)
@@ -244,8 +245,8 @@ What a dynamically linked ELF can `DT_NEEDED`. 🟩 = satisfiable today (in-imag
 
 | Family | State |
 |---|---|
-| Decoding infrastructure (prefixes, ModRM/SIB incl. idx=4 trap + abs32 disp, REX, RIP-relative, FS/GS bases) | 🟩 (VEX/EVEX structurally detected → 🟨 placeholders) |
-| MOV family (88–8B, A0–A3, B8–BF, C6/C7, 63 MOVSXD, 98 CWDE/CDQE, 99 CDQ, XCHG 86/87/90+r) | 🟩 (BSWAP, MOVBE, MOVDIRI/MOVDIR64B 🟩) |
+| Decoding infrastructure (prefixes, ModRM/SIB incl. idx=4 trap + abs32 disp, REX, RIP-relative, FS/GS bases) | 🟩 (VEX and EVEX fully decoded into the same IR — §2.21) |
+| MOV family (88–8B, A0–A3, B0–B7 `mov r8,imm8`, B8–BF, C6/C7, 63 MOVSXD, 98 CWDE/CDQE, 99 CDQ, XCHG 86/87/90+r) | 🟩 (BSWAP, MOVBE, MOVDIRI/MOVDIR64B 🟩; AH/CH/DH/BH honoured as bits 15:8 in interpreter and AOT) |
 | ALU (00–3B all 8 groups + eAX-imm 04-3D forms + 80/81/83 imm) | 🟩 with true ADC/SBB carry |
 | ADX (ADCX/ADOX 0F 38 F6), ASCII/BCD adjust (AAA/AAS/AAM/AAD, DAA/DAS) | 🟩 |
 | Bit test/scan: BT/BTS/BTR/BTC, BSF/BSR, TZCNT/LZCNT, BSWAP | 🟩 |
@@ -300,6 +301,7 @@ What a dynamically linked ELF can `DT_NEEDED`. 🟩 = satisfiable today (in-imag
 - **Load a statically linked x86-64 Linux ELF from storage and run it end-to-end**, through the interpreter-backed execution loop, and see its `hello world` stdout in the Logs tab — fully offline, zero external compatibility layers.
 - Relink an ELF against bundled guest libraries, get a JSON report of resolved/unresolved symbols, and package the result for distribution.
 - Load PE32+ executables: mapped, rebased (ASLR-style), and every imported function patched to a **real callable thunk** that marshals the Microsoft x64 convention into a native handler — simple console apps that use implemented APIs (`WriteFile`, `ExitProcess`, `VirtualAlloc`, …) work, and a call to an API NINE has not written yet is a logged no-op rather than a jump into unmapped memory.
+- **Relink emits AOT images**: every Relink (ELF or PE) also compiles the executable ranges ahead of time and writes `<stem>.<n>.nine.aot` next to the program, with a JSON summary (`aot.ok`, module/block/byte counts) or the blocking mnemonics when a range cannot be compiled. The same generated AArch64 has been executed on device through `AotEngine`, including guest-memory operands, calls, and high-byte register forms.
 - Warm-start repeated runs from the **persistent translation cache**, with SMC-safety and two guest threads running concurrently.
 - Chat with a cloud LLM of your choice (or a local GGUF if the llama build is linked), have it parse tool calls in essentially any model's format, execute file/search tools, and compile/apply patches for extensions.
 - Create, format, compress, and export virtual disk images for future program installation.
@@ -323,7 +325,8 @@ Mid-term:
 10. **VHD integration** — mount-in-place file access and program/library installation into images (the packaged-zip format already anticipates this).
 11. **AI polish** — streaming responses, proper TFLite tokenization (or drop it for GGUF-only), On-device NPU delegate path.
 12. **Coverage docs** — keep `app/src/main/cpp/SUPPORTED.md` (syscalls, relocations, PE data directories) in sync as coverage grows; on-device stress for J-phase 🟡 items.
-13. **Runtime `.so` split + translated relinker** — split `libnexus_core` into component `.so`s (`core` / `jit` / `abi_windows` / `abi_linux` / `ai`) so per-program relinking stays light; emit self-contained light APKs that bundle a program + only the ABI surfaces it imports; long-term mode where the **relinker itself translates x86-64 → AArch64**, producing binaries that run natively on ARM64 without booting the NINE interpreter at all (see ARCHITECTURE.md §1.2).
+13. **Runtime `.so` split + translated relinker** — split `libnexus_core` into component `.so`s (`core` / `jit` / `abi_windows` / `abi_linux` / `ai`) so per-program relinking stays light; emit self-contained light APKs that bundle a program + only the ABI surfaces it imports (see ARCHITECTURE.md §1.2).
+14. **Finish the AOT path** — wire `.nine.aot` images into `ExecutionLoop` and the light shell so a relinked program runs the pre-compiled blocks instead of re-translating (the engine, image format and relinker step already exist), then grow the emitter past its integer subset: `IMUL`/`DIV`, string ops with REP, SSE moves/arithmetic, and x87 — each one moves a real binary from "refused by name" to "runs without a translator".
 
 Explicit non-goals: full DirectX/Vulkan *parity*, kernel-mode drivers, bug-for-bug Windows compatibility. See `JITImplementationPlan.md` §13.
 
@@ -347,9 +350,16 @@ Install the APK on an **ARM64 device or emulator running API 26+**.
 
 ```
 app/src/main/cpp/           libnexus_core — memory/, loader/elf/, loader/pe/, linker/,
-                            translator/, runtime/, abi/, diagnostics/, llama/, tests/
-app/src/main/java/          com.nine.dbt — Compose UI + GuestRuntime/Llama/NativeTests bridges
-devtools/toolcalling-tests/ Parser/E2E/stub tests for the tool-call parser
+                            translator/, aot/, runtime/, abi/, diagnostics/, upscale/,
+                            llama/, tests/
+app/src/main/java/          com.nine.dbt — Compose UI, VHD manager, light-shell packager
+                            (AxmlPatcher/ApkV1Signer/ShellInstallQueue) + GuestRuntime/
+                            Llama/NativeTests bridges
+shell/                      :shell — the light-shell host APK (program launcher, settings,
+                            logs, render surface)
+devtools/                   signer_check.py / cert_probe.py / pkcs7_diff.py (offline
+                            APK-signature verification), test_light_shell.ps1,
+                            toolcalling-tests/ (parser/E2E/stub tests)
 ```
 
 Surface-coverage docs (keep in sync — see REVERSE_TECHNIQUE.md "Coverage ledger maintenance"):

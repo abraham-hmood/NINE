@@ -1290,6 +1290,22 @@ static std::string testAot() {
         } else expect(false, "aot mem/xchg compile/load");
     }
 
+    // High-byte registers name bits 15:8 of the containing GPR: encoding 4-7
+    // without REX is AH/CH/DH/BH, not SPL/BPL/SIL/DIL.
+    const std::vector<uint8_t> high8 = {
+        0xB8,0x34,0x12,0,0,   // mov eax, 0x1234
+        0xB4,0x56,            // mov ah, 0x56      -> rax = 0x5634
+        0xB0,0x78,            // mov al, 0x78      -> rax = 0x5678
+        0x88,0xE3,            // mov bl, ah        -> rbx = 0x56
+        0x80,0xC4,0x01,       // add ah, 1         -> rax = 0x5778
+        0x88,0xE7,            // mov bh, ah        -> rbx = 0x5756
+        0x0F,0x05             // syscall
+    };
+    if (auto c = run(high8, 0, nullptr)) {
+        expect(c->rax() == 0x5778, "aot writes ah/al only");
+        expect(c->rbx() == 0x5756, "aot reads+writes ah/bh");
+    } else expect(false, "aot high8 compile/load");
+
     // mov rax,7 ; call func ; syscall ; func: add rax,3 ; push rax ; pop rbx ; ret
     const uint64_t stack = mm.allocate(0, 8192, PagePerm::READ_WRITE, "aot_stack");
     const std::vector<uint8_t> call = {

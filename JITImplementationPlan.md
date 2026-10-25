@@ -18,7 +18,7 @@
 | 🟡 | **Partially implemented** — real code exists; exit criteria not fully met |
 | ⬜ | **Not started** |
 
-Last audit: 2026-10-16.
+Last audit: 2026-10-25.
 
 ### Phase rollup (JIT plan)
 
@@ -29,6 +29,7 @@ Last audit: 2026-10-16.
 | J3 | Traces & optimizations | 🟢 (3.4 🟡 until measured) |
 | J4 | Persistent cache & MT JIT safety | 🟢 (4.3 🟡 until device stress) |
 | J5 | App integration | 🟢 (5.4 🟡 until hello on device) |
+| J6 | Relinker-side AOT translation | 🟡 (compiler/runtime/relink 🟢, run-path wiring ⬜) — §16 |
 | G1 | Windows GUI | ⬜ |
 | G2 | D3D/Vulkan translation | ⬜ |
 | K1 | Kernel research | ⬜ |
@@ -318,15 +319,65 @@ Fuzz decoder and loader continuously; never require an external emulator to vali
 
 ---
 
-## 14. Immediate Next Step
+## 14. Immediate Next Step (as of the 2026-10-25 audit)
 
-1. Land the `CLONE_*` → `NINE_CLONE_*` build fix (this change set).
-2. Implement **Phase J1**: fixed trampoline + translator prolog/epilog that load/store `GuestContext`, and switch `ExecutionLoop` to call `host_code` when present.
-3. Add a differential test (interpreter vs JIT) for a hand-crafted ADD/JMP block.
+J1–J5 infrastructure is in place. What is left, in order:
+
+1. **Wire J6 (AOT) into the run path** — `ExecutionLoop` and the light shell should
+   load `<stem>.<n>.nine.aot` and dispatch it through `AotEngine` when the image
+   covers the guest PC, falling back to the translator for anything it does not
+   (`aot.ok` already reports whether a program is fully covered).
+2. **Close the 🟡 exit criteria with measurements** on device: glibc `hello`
+   reaching `write` at >95% cache-hit JIT execution (J2.3), trace/IC counter
+   deltas (J3.4), two-thread stress (J4.3).
+3. **Emitter depth** — SIMD is interpreter-only today (`runtime/VecExec.cpp`);
+   emitting the SSE moves/arithmetic glibc startup uses, plus `IMUL`/`DIV` and
+   REP string ops, is what moves binaries from “interpreter fallback” to JIT/AOT.
 
 ---
 
 *This plan extends NINE from an interpreter-backed user-mode runtime into a self-contained production DBT capable of Linux and Windows user-mode programs, with optional later tracks for GUI, graphics, and 32-bit guests — without ever outsourcing translation to an external compatibility stack.*
+
+---
+
+## 16. Phase J6 — Relinker-side AOT translation (added 2026-10-25)  🟡
+
+**Objective**: stop paying translation cost at run time for programs the relinker
+already has in hand, and eventually produce AArch64 code that needs no translator
+at all. This is the concrete form of §13's “relinker itself translates” note and
+of `ARCHITECTURE.md` §1.3.
+
+### 16.1 What exists  🟢
+- `aot/AotCompiler.cpp` — decodes each executable range with the same `X86Decoder`
+  the JIT uses, splits at terminators and direct branch targets, and emits one
+  AArch64 function per basic block. Guest state stays in `GuestContext` memory
+  (`x23` = ctx, `x9–x16` scratch), so blocks are position independent.
+- Helper calls (flags, shifts, guest loads/stores) are the interpreter's own
+  semantics: `AotHelpers.cpp` mirrors `translator/FlagState.cpp`, and memory goes
+  through `nine_load*`/`nine_store*` so permissions and faults match exactly.
+  Because a C helper clobbers every scratch register, values an instruction has
+  already computed are parked on the stack around the call.
+- `aot/AotImage.h` / `AotRuntime.cpp` — serialise, map RW, patch `MOVZ/MOVK`
+  helper relocations, `__clear_cache`, seal RX, index blocks by guest PC, run.
+- `aot/AotRelink.cpp` — called from `RuntimeBridge::relinkElf`/`relinkPe`; writes
+  `<stem>.<n>.nine.aot` per executable module and reports `aot.ok`,
+  modules/blocks/bytes and the deduplicated blocking mnemonics in the relink JSON.
+
+### 16.2 Coverage and failure mode  🟢
+- Integer ALU/flags, shifts/rotates, the MOV family (including `mov r8,imm8` and
+  AH/CH/DH/BH), LEA, PUSH/POP/LEAVE, SETcc/CMOV/XCHG, BSWAP, CBW/CWDE/CDQE/CDQ,
+  flag-control, Jcc/JMP/CALL/RET, SYSCALL/INT3/UD2 — `SUPPORTED.md` §4.
+- **All-or-nothing per module**: an unsupported opcode produces no image, so a
+  partial image can never be silently wrong. Refusals are named in the relink log.
+
+### 16.3 Exit criteria  🟡
+- 🟢 Generated behaviour verified on device against a harness built from the
+  shipped sources (arith/flags/SETcc, loops, memory-source ALU with a live
+  destination, `xchg` both forms, calls with a balanced stack, shifts/rotates/
+  BSWAP, high-byte registers), and the same cases live in `tests/NativeTests.cpp`.
+- ⬜ `ExecutionLoop`/light shell dispatch `.nine.aot` images at run time.
+- ⬜ A real program relinked to a full-coverage image runs with no translator
+  instantiated (the “runs on ARM64 without NINE” endpoint).
 
 ---
 

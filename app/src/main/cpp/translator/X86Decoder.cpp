@@ -1810,6 +1810,20 @@ std::optional<Insn> X86Decoder::decode(const uint8_t* data, size_t len, uint64_t
         return finish(X86Op::MOV, "mov");
     }
 
+    // MOV r8, imm8 (B0+rb). Encoding numbers 4-7 select AH/CH/DH/BH when the
+    // instruction carries no REX prefix.
+    if (opc >= 0xB0 && opc <= 0xB7) {
+        if (i + 1 > len) return std::nullopt;
+        in.dst.kind = OperandKind::REG;
+        in.dst.reg = (opc - 0xB0) + rex_b;
+        in.dst.size = 8;
+        applyByteReg(in.dst, rex);
+        in.src.kind = OperandKind::IMM;
+        in.src.size = 8;
+        in.src.imm = data[i++];
+        return finish(X86Op::MOV, "mov");
+    }
+
     // MOV r/m, imm  (C7 /0) and MOV r, imm (B8+rd)
     if (opc >= 0xB8 && opc <= 0xBF) {
         in.dst.kind = OperandKind::REG;

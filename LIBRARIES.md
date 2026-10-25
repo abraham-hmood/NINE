@@ -44,7 +44,7 @@ getppid(110)       gettid(186)       getuid(102)       geteuid(107)
 getgid(104)        getegid(108)      uname(63)         fcntl(72)
 getcwd(79)         chdir(80)         gettimeofday(96)  sysinfo(99)
 mremap(25)         sched_yield(24)   exit(60)          exit_group(231)
-clone(56)          set_tid_address(218)  futex(202, WAIT/WAKE)  tgkill(234)
+clone(56)          set_tid_address(218)  tgkill(234)      pread64(17)
 sched_getparam(143)  sched_setscheduler(144)  sched_getscheduler(145)
 sched_get_priority_max(146)  sched_get_priority_min(147)
 clock_gettime(228) getrandom(318)    arch_prctl(158)
@@ -58,10 +58,11 @@ faccessat(269)     prlimit64(302)
 |---|---|---|
 | rt_sigaction | 13 | stub, returns 0 |
 | rt_sigprocmask | 14 | stub |
-| pread64 / pwrite64 | 17/18 | partial |
-| ioctl | 16 | stub (termios-ish paths) |
-| madvise | 28 | stub |
-| msync | 26 | stub |
+| futex | 202 | WAIT / WAKE only |
+| ioctl | 16 | `-ENOTTY` (no termios paths) |
+| madvise | 28 | stub, returns 0 |
+| msync | 26 | no arm → `-ENOSYS` |
+| pwrite64 | 18 | no arm → `-ENOSYS` (pread64 is full) |
 | prctl | 157 | partial (SET_NAME etc.) |
 | sched_getaffinity | 204 | partial (single-cpu mask) |
 
@@ -172,8 +173,11 @@ bound to a logging stub, so a call is a safe no-op instead of a wild jump.
 
 ## Part 3 — Count snapshot (keep refreshed when grids change)
 
-- Linux syscalls with real behavior: **≈60** of ~450 documented numbers
-- Windows: PE loader stack 🟩; **every export is a callable thunk** (`WinAbi`), with ~140 native handlers across kernel32/kernelbase/ntdll and callable stubs for user32/gdi32/advapi32; unknown names are logged no-ops. Still missing: wait-multiple, sections, APC/overlapped I/O, the registry, mixed-mode unwinding, varargs marshalling
+- Linux syscalls with real behavior: **≈56** of ~450 documented numbers (62 `case` arms; 6 of those refuse on purpose)
+- Windows: PE loader stack 🟩; **every export is a callable thunk** (`WinAbi`), with 105 kernel32 export names (each also registered on kernelbase) plus ntdll handlers and 55 callable user32/gdi32/advapi32 exports; unknown names are logged no-ops. Still missing: wait-multiple, sections, APC/overlapped I/O, the registry, mixed-mode unwinding, varargs marshalling
+- Per-number contract for those 62 arms: `app/src/main/cpp/SUPPORTED.md` §1
+- ELF relocations with an arm: **14** (NONE/64/PC32/PLT32/GLOB_DAT/JUMP_SLOT/RELATIVE/IRELATIVE/GOTPCREL/32/32S/DTPMOD64/DTPOFF64/TPOFF64); `COPY`, `GOT32`, `TLSGD`/`TLSLD`, `GOTPCRELX` are not handled — `SUPPORTED.md` §2
+- AOT emitter (relinker-side codegen, all-or-nothing per module): **≈48 opcodes** — integer ALU/flags, shifts/rotates, MOV family incl. AH/CH/DH/BH, LEA, PUSH/POP/LEAVE, SETcc/CMOV/XCHG, BSWAP, CBW/CWDE/CDQE/CDQ, flag-control, Jcc/JMP/CALL/RET, SYSCALL/INT3/UD2. Refused by name: IMUL/MUL/DIV/IDIV, all SSE/AVX, string ops, x87, BCD, CMPXCHG/XADD, BT/BSF/BSR/POPCNT/BMI, PUSHF/POPF/SAHF/LAHF — `SUPPORTED.md` §4
 - ISA: ≈760 of the 1208 felixcloutier.com-indexed instructions decoded + executed end-to-end (SSE4.2 string compare, ADX, BCD adjust, AES-NI, Key Locker, SHA-1/SHA-256, BMI1/BMI2, XSAVE family, RDTSC/RDTSCP/RDSEED, SHLD/SHRD, CET/TBM/RTM/Ring-0 refusals, bit-test/scan, MPX; plus the full AVX/AVX2/AVX-512 vector path — 426 distinct vector mnemonics, 453 encoding rows — and the SGX ENCLS/ENCLU/ENCLV leaves); see ARCHITECTURE.md §2.1–§2.22 for the ledger
 - **System-library inventory** (README › Coverage grids): Windows ≈80 app-linkable DLLs catalogued; NINE-side behavioral shims exist only for ntdll/kernel32/user32/gdi32/advapi32 stubs — everything else ⬛. Linux ≈55 library families catalogued; the satisfiable set is the glibc core family (loader, libc, libm, merged pthread/dl/rt/util via static-in-image + loader merge-awareness) 🟩/🟨 and libresolv 🟨, liberally everything else ⬛ demand-driven backlog for dynamic guests
 - ⬛-only rule: a DLL/library row stays ⬛ until a guest proves it needs it (REVERSE_TECHNIQUE.md); the inventories are the backlog, not a forced pre-implementation todo

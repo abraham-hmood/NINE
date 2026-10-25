@@ -211,6 +211,9 @@ void Compiler::loadOperand(const Operand& op, int rd, int bits, const Insn& in) 
     switch (op.kind) {
         case OperandKind::REG:
             loadGuest(op.reg, rd);
+            // AH/CH/DH/BH name bits 15:8 of the containing GPR, not a register
+            // of their own (no REX prefix, encoding 4-7).
+            if (op.high8) e_.lsr_imm(rd, rd, 8);
             maskReg(rd, bits, R_T2);
             return;
         case OperandKind::IMM:
@@ -234,7 +237,16 @@ void Compiler::loadOperand(const Operand& op, int rd, int bits, const Insn& in) 
 void Compiler::storeOperand(const Operand& op, int rs, int bits, const Insn& in) {
     switch (op.kind) {
         case OperandKind::REG: {
-            if (bits >= 32) {
+            if (op.high8) {
+                // Write bits 15:8 and leave the rest of the GPR untouched.
+                maskReg(rs, 8, R_T2);
+                e_.lsl_imm(R_T0, rs, 8);
+                loadGuest(op.reg, R_T1);
+                movImm(R_T3, ~0xFF00ull);
+                e_.and_reg(R_T1, R_T1, R_T3, true);
+                e_.orr_reg(R_T1, R_T1, R_T0, true);
+                storeGuest(op.reg, R_T1);
+            } else if (bits >= 32) {
                 storeGuest(op.reg, rs);
             } else {
                 // 8/16-bit writes replace only the low bits of the GPR.

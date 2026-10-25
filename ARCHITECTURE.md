@@ -44,11 +44,15 @@ Cross-cutting subsystems:
 
 | Field | Purpose |
 |---|---|
-| `ctx.rax…r15`, `ctx.rip`, `ctx.rflags` | integer architect state |
-| `ctx.ymm[16][32]` | XMM/YMM as byte arrays (XMM n = `ymm[n]`, indexed ≥16 for XMM regs after GPRs) |
+| `ctx.gpr[16]`, `ctx.rip`, `ctx.rflags` | integer architect state; accessors `ctx.rax()` … `ctx.rdi()` |
+| `ctx.ymm[32][64]` | the whole vector file: 32 registers × 64 bytes. XMMn is bytes 0-15, YMMn 0-31, ZMMn 0-63 of the same slot, so an SSE write leaves the upper bytes alone and VEX/EVEX zero-extends them where the ISA says |
+| `ctx.kmask[8]` | AVX-512 opmask k0-k7 (k0 = implicit unmasked) |
+| `ctx.fpu` (`x87::State`) | x87 stack (8 × 80-bit), control/status/tag words; travels with the context |
+| `ctx.bnd[4][2]` | MPX bounds BND0-BND3 as (LB, UB) in architecturally visible 1's-complement form |
 | `ctx.fs_base`, `ctx.gs_base` | TLS bases; added in `effectiveAddress` when `seg==1/2` |
-| `ctx.rdx` carries pd value; helper `GuestContext::rax()/rdx()` etc. | accessors for syscall shims |
-| thread-local per thread; `GuestContext::cur_block` tracks the executing block | |
+| `ctx.mxcsr` | SSE control/status, round-tripped by LDMXCSR/STMXCSR/FXSAVE; routing bits not applied to SSE math yet |
+| `ctx.exit_reason`, `exit_code`, `exit_arg0..2` | the J1.2/J6 exit channel written by translated and AOT blocks before `RET` |
+| thread-local per thread; `ContextSwitch::current()` reaches it; `kRedZone` = 128 bytes | |
 
 ### 1.1 Host feature modules (`app/src/main/cpp/upscale/`)
 
@@ -77,9 +81,13 @@ Current NFC: all guest ABI surfaces live in `libnexus_core.so`. Roadmap so per-p
 
 ### 1.3 Relinker-side AOT translation (`app/src/main/cpp/aot/`)
 
-The relinker no longer produces a package that still needs the runtime translator: it
-compiles the program while the image is mapped and relocated, and the light shell
-just loads and dispatches the result.
+The relinker compiles the program while the image is mapped and relocated and
+writes native images beside it, so the result no longer *needs* a translator to be
+interpretable. `AotEngine`/`AotModule` load and dispatch those images. **Status:** the
+compiler, runtime and relink step are done and exercised on device; wiring the run
+path (`ExecutionLoop` / light shell) to *prefer* a `.nine.aot` image over the
+translator is not done yet — today the relink report is the only consumer, so a
+program still executes through the interpreter/JIT.
 
 | Piece | Role |
 |---|---|
@@ -93,23 +101,31 @@ just loads and dispatches the result.
 Acceptance is all-or-nothing per module: an unsupported instruction yields no image,
 the relink result carries `aot.unsupported` (deduplicated mnemonics) and
 `aot.error`, and the summary line says `AOT: not translated`. Nothing is
-silently miscompiled. `aot.ok` in the relink JSON is the contract the shell uses
-to decide whether the program can run without a translator.
+silently miscompiled. `aot.ok` in the relink JSON is the contract a run path will
+use to decide whether a program can run without a translator; today the relink
+report is the only consumer of it.
 
 Emitted-code coverage today: `NOP`, `MOV`, `MOVZX`, `MOVSX`, `LEA`, `PUSH`,
 `POP`, `LEAVE`, `ADD/SUB/AND/OR/XOR/CMP/TEST`, `INC/DEC/NEG/NOT`,
 `SHL/SHR/SAR/ROL/ROR`, `SETcc`, `CMOV`, `XCHG`, `Jcc`, `JMP`, `CALL`, `RET`,
 `SYSCALL`, `INT3`, `UD2`, `BSWAP`, `CBW/CWDE/CDQE/CDQ`, `CLC/STC/CLI/STI/CLD/STD/CLAC/STAC`.
-Anything else (SSE/AVX, `IMUL`, `DIV`, string ops, x87, MPX, BCD adjusts) is
+8-bit operands follow the legacy register rule end to end: encoding numbers 4-7 on
+`ah/bh/ch/dh` are read from and written to bits 15:8 of the containing GPR (matches
+`InsnInterpreter::readOperand`/`writeOperand`), so `mov ah,1` cannot alias the low
+byte. Anything else (SSE/AVX, `IMUL`, `DIV`, string ops, x87, MPX, BCD adjusts) is
 refused by name until it gets an emitter.
 
 Verified on a real arm64 device (NDK-built harness linking the shipped sources):
 arith+flags/SETcc, loop+branch, guest-memory load/store (including a memory
 source with a live destination, e.g. `add rax, [rbx]`), `xchg` in both the
 r/m↔reg and reg↔reg forms, `CALL`/`PUSH`/`POP`/`RET` with a balanced stack, and
-shift/rotate/`BSWAP` all execute correctly; an SSE blob is refused with its
-mnemonic listed. The same cases live in `tests/NativeTests.cpp` behind test id
-`j5`/`9.5`/`aot`.
+shift/rotate/`BSWAP` all execute correctly; high-byte access
+(`mov al/ah`, `add ah`, `mov bl,ah`, `mov bh,ah`) lands in the right bits while the
+rest of the GPR is preserved; an SSE blob is refused with its mnemonic listed. Each
+case was also run against a build with the fix removed to prove the check fails
+without it (`add rax,[rbx]` returned helper garbage; high-byte ops aliased the low
+byte, `rax=0x1279` instead of `0x5778`). The same cases live in
+`tests/NativeTests.cpp` behind test id `j5`/`9.5`/`aot`.
 
 ---
 
@@ -125,7 +141,8 @@ unsupported mnemonic → `X86Op::INVALID` → interpreter SEH `0xc000001d … un
 | Legacy prefixes: LOCK(F0), REP/REPE(F3), REPNE(F2), o16(66), CS/DS/ES/SS overrides, Segment FS(64)/GS(65) recorded (`in.seg`), opsize branches | 🟩 |
 | ModRM/SIB with index=4-no-XMM trap, `[rbp+disp]`, absolute disps, RIP-relative (+ instruction-length fix — `cur_insn_len_`) | 🟩 |
 | REX (W/R/X/B), VEX.128/.256 structurally detected (→ per-op AVX table below), EVEX structurally detected | 🟨 |
-| Operand-size handling for ALU 16-bit imm, C7, B8–BF, string ops | 🟩 |
+| Operand-size handling for ALU 16-bit imm, C7, B0–BF, string ops | 🟩 |
+| Legacy 8-bit register rule: without REX, encoding 4-7 is AH/CH/DH/BH (`Operand::high8`, set by `applyByteReg`) | 🟩 |
 | FS/GS segment bases honored in memory ops | 🟩 |
 | LOCK prefix accepted on RMW ALU/CMPXCHG/XADD (unlocked single-thread semantics) | 🟨 |
 | REPE/REPNE loop execution for string ops | 🟨 |
@@ -135,6 +152,7 @@ unsupported mnemonic → `X86Op::INVALID` → interpreter SEH `0xc000001d … un
 | Instruction | Family | Status |
 |---|---|---|
 | `MOV r/m8, r8` (88), `MOV r/m16/64, r` (89), `MOV r8 ← r/m8` (8A), `MOV r ← r/m` (8B) | int | 🟩 |
+| `MOV r8, imm8` (B0+r) — incl. AH/CH/DH/BH destinations | int | 🟩 |
 | `MOV r/m64, imm64` (B8+r imm64), reg-immediate for 16/32 | int | 🟩 |
 | MOV moffs (A0–A3 absolute) | int | 🟩 |
 | `MOV r/m, imm` (C6 = 8-bit, C7 = 16/32/64-sign-extended) | int | 🟩 |
@@ -143,10 +161,11 @@ unsupported mnemonic → `X86Op::INVALID` → interpreter SEH `0xc000001d … un
 | MOVZX (0F B6/B7), MOVSX (0F BE/BF), MOVSXD (63, 32→sign ext 64) | int | 🟩 |
 | MOVSXD with reg from shift w / 63 decoded | int | 🟩 |
 | CDQE (48 98) | int | 🟩 (as MOVSX) |
-| CDQ (99) — EAX→EDX sign, D | int | 🟩 |
+| CDQ (99) — RDX = sign of RAX (CWD/CDQ/CQO by operand size) | int | 🟩 |
 | XCHG — 87/86 mem/reg and 90+r accumulator shortform (incl. 91–97 reg swap) | int | 🟩 |
-| BSWAP (0F C8+r) | int | ⬛ |
-| MOVBE (F2 0F 38 F0/F1) | int | ⬛ |
+| BSWAP (0F C8+r) | int | 🟩 |
+| MOVBE (F2 0F 38 F0/F1, load and store) | int | 🟩 |
+| 8-bit ALU/MOV/CMP source or destination naming AH/CH/DH/BH | int | 🟩 (interpreter + AOT honour bits 15:8) |
 | PUSH r/r-r/push imm (50+r/68/6A) / PUSH FS,GS | int | 🟩 (r + imm) |
 | POP r / 8F /0 + POP FS/GS | int | 🟩 |
 | ENTER (C8) | int | ⬛ |
@@ -231,9 +250,9 @@ unsupported mnemonic → `X86Op::INVALID` → interpreter SEH `0xc000001d … un
 |---|---|
 | CMPXCHG (0F B0/B1) | 🟩 |
 | XADD (0F C0/C1) | 🟩 |
-| CMPXCHG8B/16B (0F C7) | ⬛ |
+| CMPXCHG8B/16B (0F C7 /1) | 🟩 (§2.10.1; 16-byte form compares/updates EDX:EAX / RDX:RAX as one guest-atomic block) |
 | LOCK prefix semantics’ real memory precedence (single-threaded ok; multi-thread atomics → LSE) | 🟨 |
-| MOVDIRI/MOVDIR64B, ENQCMD | ⬛ |
+| MOVDIRI/MOVDIR64B, ENQCMD | 🟩 MOVDIRI/MOVDIR64B store as documented; ENQCMD/ENQCMDS decode then #UD (CR4.ENQCMD = 0) |
 
 ### 2.9 x87 FPU (D8–DF) — implemented
 
@@ -453,6 +472,8 @@ Not implementable as requested:
 | 0x66 prefix 全 o16 record + disp32 abs32 fix (SIB base=5) | disp was skipped → instruction length wrong |
 | String ops honoring o16 (66 A4 = MOVSW) | glibc init uses 16-bit string ops |
 | %gs:/%fs: basis bases into TS mem ops | PIC glibc uses %fs:0x28 / %gs:memory+off heavily |
+| `B0-B7` (MOV r8, imm8) was missing entirely | the chain only handled `B8-BF`; `mov al,imm` / `mov ah,imm` decoded as one-byte `invalid` and desynchronised the stream (`0xB4 0x56` then read `0x56` as `push rsi`) |
+| AH/CH/DH/BH (`high8`) dropped by the AOT emitter | `mov ah,1` wrote the low byte, silently corrupting the GPR; interpreter already honoured it, AOT now loads bits 15:8 and writes them back with the low byte and upper 48 bits preserved |
 
 ---
 
@@ -2247,6 +2268,7 @@ ring-0 bring-up use the second. With the model off, all three instructions are
 - README carries the *visual* coverage grids (Windows ABI / Linux API / ISA), now including the **complete Windows system-DLL inventory** (≈80 app-linkable DLLs incl. kernelbase/win32u/api-ms-win-* API-sets) and the **complete Linux system-library inventory** (glibc family + GCC runtime + ecosystems listed per family).
 - `LIBRARIES.md` carries the *named* per-API and per-syscall checklists.
 - This file carries the *instruction* inventory + the runtime architecture rationale.
-- `app/src/main/cpp/SUPPORTED.md` remains the original hardcoded technical table (syscalls, relocations, PE directories).
+- `app/src/main/cpp/SUPPORTED.md` is the hard, enumerable contract (62 syscall arms with per-number behaviour, 14 ELF relocation types, PE directory consumers, and the AOT emitter opcode surface) — refreshed against the tree on 2026-10-25.
+- `DevelopmentPlan.md` / `JITImplementationPlan.md` carry the phase status, including **J6** (relinker-side AOT translation: compiler/runtime/relink done, run-path wiring open).
 
 **Maintenance rule:** any patch that adds/removes a guest-visible capability must update cells in AUTHOR-enclosing docs in the same commit. If the ISA cell you are flipping touches one row's mnemonic too — add a row to §2 here and flip the equivalent cell in README’s ISA grid in the same commit (details in REVERSE_TECHNIQUE.md "Coverage ledger maintenance").

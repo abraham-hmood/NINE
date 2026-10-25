@@ -41,3 +41,42 @@ stop reason=EXCEPTION @422599
 ELF done running=1 rip=0x422599 blocks=35 hits=0 miss=0 xlat=0 sys=0 smc=0 | stop reason=EXCEPTION @422599
 19:20:53.848 [INFO/GEN] ELF done running=1 rip=0x422599 blocks=35 hits=0 miss=0 xlat=0 sys=0 smc=0 | stop reason=EXCEPTION @422599
 ELF done running=1 rip=0x422599 blocks=35 hits=0 miss=0 xlat=0 sys=0 smc=0 | stop reason=EXCEPTION @422599
+---
+
+## 2026-10-25 — AOT codegen + high-byte register verification (arm64 device)
+
+Harness built with the NDK from the shipped sources (`AotCompiler`, `AotRuntime`,
+`AotHelpers`, `X86Decoder`, `Arm64Emitter`, `MemHelpers`, `MemoryManager`) and
+run on the connected device, so the emitted AArch64 really executes:
+
+```
+data page at 0x10000000
+image: blocks=1 words=98 relocs=6
+rax=9 (want 9)  rcx=41 (want 41)  rdx=7 (want 7)  rsi=42 (want 42)
+AOT MEM/XCHG PASS
+image: blocks=1 words=96 relocs=1
+rax=0x5778 (want 0x5778)  rbx=0x5756 (want 0x5756)
+AOT HIGH8 PASS
+```
+
+Negative control — the same harness linked against a copy of `AotCompiler.cpp`
+with the high8 handling removed, which is the behaviour before this change:
+
+```
+image: blocks=1 words=90 relocs=1
+rax=0x1279 (want 0x5778)  rbx=0x79 (want 0x5756)
+AOT HIGH8 FAIL
+```
+
+Decoder dump that exposed the `B0–B7` gap (`mov al,0x78` and `mov ah,0x56` were
+decoding as one-byte `invalid`, desynchronising the rest of the block):
+
+```
+off  0 len 5 op 2  mn mov      dst(reg=0 sz=32 h8=0) src(imm sz=0 h8=0)
+off  5 len 2 op 2  mn mov      dst(reg=0 sz=8  h8=1) src(imm sz=8 h8=0)   ; mov ah,0x56
+off  7 len 2 op 2  mn mov      dst(reg=0 sz=8  h8=0) src(imm sz=8 h8=0)   ; mov al,0x78
+off  9 len 2 op 2  mn mov      dst(reg=3 sz=8  h8=0) src(reg=0 sz=8 h8=1) ; mov bl,ah
+off 11 len 3 op 9  mn add      dst(reg=0 sz=8  h8=1) src(imm sz=8 h8=0)   ; add ah,1
+off 14 len 2 op 2  mn mov      dst(reg=3 sz=8  h8=1) src(reg=0 sz=8 h8=1) ; mov bh,ah
+off 16 len 2 op 52 mn syscall  dst(none) src(none)
+```

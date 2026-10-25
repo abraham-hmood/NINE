@@ -20,7 +20,7 @@ This plan is intentionally detailed. Each phase builds production-quality compon
 | 🟡 | **Partially implemented** — real code exists; coverage or edge cases incomplete |
 | ⬜ | **Not started** |
 
-Last audit: 2026-10-16.
+Last audit: 2026-10-25.
 
 ### Phase rollup (DevelopmentPlan)
 
@@ -29,7 +29,7 @@ Last audit: 2026-10-16.
 | 0 | Foundations | 🟢 |
 | 1 | ELF Loader | 🟡 |
 | 2 | Dynamic Linker | 🟡 |
-| 3 | DBT (decoder/cache/interp + partial JIT) | 🟡 |
+| 3 | DBT (decoder/cache/interp + partial JIT + AOT emitter) | 🟡 |
 | 4 | PE Loader | 🟡 |
 | 5 | Linux ABI | 🟡 |
 | 6 | Windows ABI | 🟡 |
@@ -143,8 +143,8 @@ Last audit: 2026-10-16.
 
 ## 5. Phase 3 — ISA Translator & DBT Engine (Core)
 
-### 5.1 x86-64 Decoder  🟡
-- Full decoder for user-mode x86-64 (including VEX/EVEX for AVX/AVX2; AVX-512 optional later).
+### 5.1 x86-64 Decoder  🟢
+- Full decoder for user-mode x86-64 (including VEX/EVEX for AVX/AVX2; AVX-512 optional later).  *(Delivered: VEX AVX/AVX2 and EVEX AVX-512 — zmm16-31, k-masks, broadcast, disp8×N — decode into the same `X86Op::VEC` IR, 453 encoding rows. `ARCHITECTURE.md` §2.21 lists what remains: SAE/ER.)*
 - Handle prefixes, ModR/M, SIB, RIP-relative, immediates.
 - Produce a clean IR or directly drive the encoder.
 - Recommended: structured IR (opcodes + operands) for easier analysis.
@@ -177,7 +177,15 @@ Last audit: 2026-10-16.
 
 ### 5.7 SIMD & Atomics  🟡
 - Map SSE/AVX registers to NEON/SVE where possible; fallback to scalar or software for missing ops.
-- Correct memory ordering for `lock` prefixes and atomic instructions (`mfence`, `lock cmpxchg`, etc.).
+  *(Delivered for the interpreter: `runtime/VecExec.cpp` executes the full XMM/YMM/ZMM surface, x87 lives in `X87Exec.cpp`, AES/SHA/GFNI in `AesPrimitives.h`. The **JIT emitter** does not emit SIMD yet, so a block containing vector work falls back to the interpreter.)*
+- Correct memory ordering for `lock` prefixes and atomic instructions (`mfence`, `lock cmpxchg`, etc.).  *(Fences retire as ordered no-ops for the single guest CPU model; true multi-core LOCK semantics are still 🟡 — `translator/SimdAtomics` is designed but not wired into the JIT.)*
+
+### 5.8 Relinker-side AOT translation  🟢 *(new, added after this plan was written)*
+- `aot/AotCompiler.cpp` compiles each executable range of a mapped, relocated ELF/PE ahead of time: one AArch64 function per basic block, guest state kept in `GuestContext` memory, all-or-nothing per module.
+- `aot/AotImage.h` defines the on-disk image (header | blocks | helper relocations | code, FNV-1a over the code words); `aot/AotRuntime.cpp` maps it RW, patches helper addresses, `__clear_cache`, `mprotect` RX, and dispatches by guest PC with no decoder, code cache or SMC tracking.
+- `aot/AotRelink.cpp` is driven from `RuntimeBridge::relinkElf`/`relinkPe` and writes `<stem>.<n>.nine.aot` next to the program; the relink JSON reports `aot.ok`, module/block/byte counts, and the blocking mnemonics.
+- Coverage is the integer/flag/branch/memory subset (§4 of `SUPPORTED.md`); SSE/AVX, `IMUL`/`DIV`, string ops and x87 are refused by name.
+- **Not done:** the run path (`ExecutionLoop`, light shell) does not yet prefer a `.nine.aot` image over the translator, and the emitter only produces self-contained images — it does not yet link guest relocations into native calls.
 
 **Exit criteria**: Translate and execute simple arithmetic, branches, memory ops, and function calls in a test binary. Measure overhead.
 
@@ -305,7 +313,7 @@ Last audit: 2026-10-16.
 - Performance counters and basic optimizations (trace compilation, register caching across blocks).  🟡 (ExecCounters + cache counters; no trace compilation yet — see JIT plan J3)
 - Persistent translation cache.  🟢 (CodeCache::saveToFile / loadFromFile)
 - Security: W^X where possible, guard pages, pointer authentication awareness on ARM64.  🟡 (W^X + guards; PAC not implemented)
-- Documentation of every supported syscall, relocation type, and PE data directory.  🟡 (SUPPORTED.md exists; keep in sync as coverage grows)
+- Documentation of every supported syscall, relocation type, and PE data directory.  🟢 (SUPPORTED.md refreshed against the tree: 62 syscall arms, 14 relocation types, PE directory consumers, AOT opcode surface — keep it in sync as coverage grows)
 
 ---
 
@@ -344,13 +352,20 @@ Last audit: 2026-10-16.
 
 ---
 
-## 14. Immediate Next Step
+## 14. Immediate Next Step (as of the 2026-10-25 audit)
 
-Begin Phase 0 and Phase 1 in parallel:
-1. Set up the NDK module structure and memory manager.
-2. Implement the ELF64 parser and PT_LOAD mapping.
+Phases 0–8 are all in place at the 🟢/🟡 level above; the open work is depth, not
+new subsystems:
 
-All subsequent phases depend on a solid memory manager and a working loader that can hand a correctly mapped guest image to the DBT.
+1. **Finish the AOT path** (§5.8): load `.nine.aot` images in `ExecutionLoop` and
+the light shell so a relinked program runs pre-compiled blocks, then extend the
+emitter past its integer subset.
+2. **JIT depth (J2/J3)**: emit SIMD (currently interpreter-only via `VecExec`)
+and real LOCK/atomics, and prove >95% cache-hit execution for glibc `hello` on
+device — the last J-phase exit criterion still marked 🟡.
+3. **ABI depth demanded by real binaries**: real futex semantics, signal
+delivery, `CLONE_CHILD_CLEARTID` writeback, `fork`/`execve`, and the ELF
+relocation gaps listed in `SUPPORTED.md` §2.
 
 ---
 
